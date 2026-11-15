@@ -1,0 +1,16 @@
+[Unit]
+Description=Start Android Auto when the USB host sends AOA START
+After=usb-moded.service
+# usb-moded is stopped on purpose once START arrives. Do not follow it down.
+
+[Service]
+Type=simple
+ExecStart=/usr/share/cargadgetd/usb-aoa-launch.sh --fg
+Restart=always
+RestartSec=1
+# 78: transport is wireless. The waiter exits and must stay down so it does
+# not poll. Settings starts the unit again when transport is usb.
+RestartPreventExitStatus=78
+
+[Install]
+WantedBy=multi-user.target

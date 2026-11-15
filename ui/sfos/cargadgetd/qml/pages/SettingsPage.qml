@@ -1,0 +1,205 @@
+import QtQuick 2.0
+import Sailfish.Silica 1.0
+
+Page {
+    id: page
+    property bool _ready: false
+
+    function apply(section, row, value) {
+        var err = PluginSettings.setRow(section, row, value)
+        if (err === "")
+            Daemon.reloadYaml()
+    }
+
+    Component.onCompleted: {
+        PluginSettings.reload()
+        _ready = true
+    }
+
+    SilicaFlickable {
+        anchors.fill: parent
+        contentHeight: column.height + Theme.paddingLarge
+
+        Column {
+            id: column
+            width: parent.width
+
+            PageHeader { title: qsTr("Settings") }
+
+            Label {
+                x: Theme.horizontalPageMargin
+                width: parent.width - 2 * x
+                visible: PluginSettings.error.length > 0
+                wrapMode: Text.Wrap
+                color: Theme.highlightColor
+                text: PluginSettings.error
+            }
+
+            Repeater {
+                model: PluginSettings.sections
+                delegate: Column {
+                    width: page.width
+                    SectionHeader { text: modelData.title }
+                    Repeater {
+                        model: modelData.rows
+                        delegate: Column {
+                            property var row: modelData
+                            width: page.width
+
+                            TextSwitch {
+                                width: parent.width
+                                visible: row.type === 0
+                                text: row.label
+                                checked: row.value === "1"
+                                onClicked: page.apply(row.section, row.row, checked ? "1" : "0")
+                            }
+
+                            ComboBox {
+                                id: enumBox
+                                width: parent.width
+                                visible: row.type === 1
+                                label: row.label
+                                menu: ContextMenu {
+                                    Repeater {
+                                        model: row.enums
+                                        MenuItem {
+                                            text: modelData
+                                            Component.onCompleted: {
+                                                if (text === row.value)
+                                                    enumBox.currentIndex = index
+                                            }
+                                            onClicked: {
+                                                var section = row.section
+                                                var r = row.row
+                                                var v = text
+                                                Qt.callLater(function() { page.apply(section, r, v) })
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Item {
+                                id: intRow
+                                width: parent.width
+                                height: Theme.itemSizeSmall
+                                visible: row.type === 2
+
+                                function step(delta) {
+                                    var n = parseInt(row.value, 10)
+                                    if (isNaN(n))
+                                        n = 0
+                                    page.apply(row.section, row.row, String(n + delta))
+                                }
+
+                                IconButton {
+                                    id: decButton
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    x: Theme.horizontalPageMargin
+                                    icon.source: "image://theme/icon-m-remove"
+                                    onClicked: intRow.step(-1)
+                                }
+
+                                IconButton {
+                                    id: incButton
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: Theme.horizontalPageMargin
+                                    icon.source: "image://theme/icon-m-add"
+                                    onClicked: intRow.step(1)
+                                }
+
+                                Label {
+                                    id: intValue
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    anchors.right: incButton.left
+                                    anchors.rightMargin: Theme.paddingMedium
+                                    text: row.value
+                                    color: Theme.highlightColor
+                                    font.pixelSize: Theme.fontSizeLarge
+                                }
+
+                                Label {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    anchors.left: decButton.right
+                                    anchors.right: intValue.left
+                                    anchors.leftMargin: Theme.paddingMedium
+                                    anchors.rightMargin: Theme.paddingSmall
+                                    elide: Text.ElideRight
+                                    text: row.label
+                                    color: Theme.primaryColor
+                                }
+                            }
+
+                            TextField {
+                                width: parent.width
+                                visible: row.type === 3
+                                label: row.label
+                                text: row.value
+                                EnterKey.onClicked: {
+                                    if (!page._ready)
+                                        return
+                                    page.apply(row.section, row.row, text)
+                                    focus = false
+                                }
+                                onFocusChanged: if (page._ready && !focus) page.apply(row.section, row.row, text)
+                            }
+                        }
+                    }
+                }
+            }
+
+            SectionHeader { text: qsTr("This app") }
+
+            TextField {
+                width: parent.width
+                label: qsTr("MD daemon binary")
+                text: Daemon.binaryPath
+                EnterKey.onClicked: { Daemon.binaryPath = text; focus = false }
+                onFocusChanged: if (!focus) Daemon.binaryPath = text
+            }
+            Label {
+                x: Theme.horizontalPageMargin
+                width: parent.width - 2 * Theme.horizontalPageMargin
+                wrapMode: Text.Wrap
+                color: Theme.secondaryColor
+                font.pixelSize: Theme.fontSizeExtraSmall
+                text: qsTr("cargadgetd-md this app starts. Not written to the YAML.")
+            }
+
+            TextField {
+                width: parent.width
+                label: qsTr("USB gadget binary")
+                text: Daemon.gadgetPath
+                EnterKey.onClicked: { Daemon.gadgetPath = text; focus = false }
+                onFocusChanged: if (!focus) Daemon.gadgetPath = text
+            }
+            Label {
+                x: Theme.horizontalPageMargin
+                width: parent.width - 2 * Theme.horizontalPageMargin
+                wrapMode: Text.Wrap
+                color: Theme.secondaryColor
+                font.pixelSize: Theme.fontSizeExtraSmall
+                text: qsTr("setuid cargadgetd-gadget this app starts. Not written to the YAML.")
+            }
+
+            TextField {
+                width: parent.width
+                label: qsTr("Shared log file")
+                text: Daemon.logPath
+                EnterKey.onClicked: { Daemon.logPath = text; focus = false }
+                onFocusChanged: if (!focus) Daemon.logPath = text
+            }
+            Label {
+                x: Theme.horizontalPageMargin
+                width: parent.width - 2 * Theme.horizontalPageMargin
+                wrapMode: Text.Wrap
+                color: Theme.secondaryColor
+                font.pixelSize: Theme.fontSizeExtraSmall
+                text: qsTr("Cleared on Start. Gadget and MD both append here.")
+            }
+        }
+
+        VerticalScrollDecorator {}
+    }
+}

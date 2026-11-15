@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+X-Nemo-Application-Type=silica-qt5
+Name=CarGadgetd
+Comment=Android Auto MD daemon control
+Icon=cargadgetd
+Exec=cargadgetd
+
+[X-Sailjail]
+# Needs FFS, pgrep/pkill, and spawning MD — not Harbour-sandboxable.
+Sandboxing=Disabled

@@ -1,0 +1,40 @@
+# Binaries / build trees
+/bin/
+/rpms/
+*.exe
+/cargadgetd
+cmd/cargadgetd/cargadgetd
+
+# DHU / Android SDK drops
+third_party/dhu/
+third_party/android-sdk/
+*.so
+desktop-head-unit
+
+# IDE / OS
+.idea/
+.vscode/
+*.pro.user
+*.swp
+.DS_Store
+
+# Test / capture
+*.pcap
+/tmp/
+
+tools/eglprobe/eglprobe
+
+# Leftover local copy of the packaged default
+/ui/sfos/cargadgetd/config.yaml
+
+_out/
+
+cargadgetd-sfcomp
+*.o
+moc_*
+Makefile
+*.list
+_out
+ui/sfos/cargadgetd/cargadgetd
+
+dist/
