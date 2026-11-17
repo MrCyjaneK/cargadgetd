@@ -674,14 +674,14 @@ func (m *MD) handle(channel uint8, flags uint8, payload []byte) error {
 		maj := binary.BigEndian.Uint16(body[0:2])
 		min := binary.BigEndian.Uint16(body[2:4])
 		m.log.Printf("version request %d.%d body=%x", maj, min, body)
-		if maj != 1 {
-			return fmt.Errorf("unsupported major %d", maj)
-		}
+		// if maj != 1 {
+		// return fmt.Errorf("unsupported major %d", maj)
+		// }
 		// Echo requested minor (DHU asks 1.7). AACS AAServer uses 1.5 for cars.
-		respMaj, respMin := uint16(1), min
-		if respMin == 0 {
-			respMin = 7
-		}
+		respMaj, respMin := maj, min
+		// if respMin == 0 {
+		// respMin = 7
+		// }
 		resp := frame.PutU16(nil, MsgVersionResponse)
 		resp = frame.PutU16(resp, respMaj)
 		resp = frame.PutU16(resp, respMin)
