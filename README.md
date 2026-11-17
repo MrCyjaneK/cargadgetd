@@ -39,4 +39,4 @@ If you have any questions feel free to open an issue or contact me on Telegram -
 
 ----
 
-Special thanks to @gregguh for the awesome project logo!
+Special thanks to Grigorii Goncharov for the awesome project logo!
