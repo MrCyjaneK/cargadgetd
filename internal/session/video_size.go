@@ -393,10 +393,18 @@ func MapTouch(x, y, ox, oy, cw, ch, codecW, codecH, inW, inH int) (int, int) {
 	if ch < 1 {
 		ch = 1
 	}
+	// Some head units omit the touchscreen size from the input SDR
+	// (touch=unset). Their InputEvent coordinates are then relative to the
+	// projected content area, not to the full video frame. Treat them as UI
+	// pixels: subtracting the video margins shifted Y into the top letterbox
+	// and clamped every touch to y=0.
+	if inW <= 0 || inH <= 0 {
+		inW, inH = cw, ch
+	}
 	switch {
 	case inW == cw && inH == ch:
 		// already UI pixels
-	case inW == codecW && inH == codecH, inW <= 0 || inH <= 0:
+	case inW == codecW && inH == codecH:
 		x -= ox
 		y -= oy
 	default:
