@@ -113,13 +113,14 @@ loop:
 
 	time.Sleep(200 * time.Millisecond)
 
-	if hu.VideoFrames < 1 {
-		t.Fatalf("expected video frames, got %d", hu.VideoFrames)
+	videoFrames, audioFrames := hu.Frames()
+	if videoFrames < 1 {
+		t.Fatalf("expected video frames, got %d", videoFrames)
 	}
-	if hu.AudioFrames < 1 {
-		t.Fatalf("expected audio frames, got %d", hu.AudioFrames)
+	if audioFrames < 1 {
+		t.Fatalf("expected audio frames, got %d", audioFrames)
 	}
-	if hu.TouchesSent < 1 {
+	if hu.Touches() < 1 {
 		t.Fatalf("expected touch sent")
 	}
 
@@ -298,7 +299,7 @@ func TestGiveUpVideoAckAfterSilence(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if got := hu.VideoFrames; got != 2 {
+	if got, _ := hu.Frames(); got != 2 {
 		t.Fatalf("head unit got %d video frames, want 2 (lost + next, no replay)", got)
 	}
 }

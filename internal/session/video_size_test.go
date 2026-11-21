@@ -103,6 +103,13 @@ func TestMapTouch(t *testing.T) {
 	if x != 512 || y != 300 {
 		t.Fatalf("scaled identity: %d,%d", x, y)
 	}
+	// HU that does not advertise a touchscreen size (touch=unset): the input
+	// event is in content space. Regression: the margins used to be subtracted
+	// and every Y clamped to 0.
+	x, y = MapTouch(398, 114, ox, oy, cw, ch, codecW, codecH, 0, 0)
+	if x != 398 || y != 114 {
+		t.Fatalf("unset input size: %d,%d", x, y)
+	}
 }
 
 func TestVideoWant(t *testing.T) {

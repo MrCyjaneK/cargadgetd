@@ -20,9 +20,9 @@ type Peer struct {
 	ssl *aassl.Session
 	log *log.Logger
 
-	VideoFrames int
-	AudioFrames int
-	TouchesSent int
+	videoFrames int
+	audioFrames int
+	touchesSent int
 	// SkipVideoAck, when set, receives video but does not MediaAck (n-ACK stall).
 	SkipVideoAck atomic.Bool
 
@@ -34,6 +34,22 @@ type peerOut struct {
 	channel, flags uint8
 	payload        []byte
 	done           chan error
+}
+
+// Frames returns how many video and audio frames this peer has received.
+// The counters are updated by the reader goroutine, so tests must read them
+// through this accessor rather than the fields.
+func (p *Peer) Frames() (video, audio int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.videoFrames, p.audioFrames
+}
+
+// Touches returns how many touches this peer has sent.
+func (p *Peer) Touches() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.touchesSent
 }
 
 func New(rw io.ReadWriter, ssl *aassl.Session, logger *log.Logger) *Peer {
@@ -216,9 +232,9 @@ func (p *Peer) onChannel(ch uint8, msgType uint16, body, full []byte) error {
 	case session.MediaIndication, session.MediaWithTimestamp:
 		p.mu.Lock()
 		if ch == session.ChanVideo {
-			p.VideoFrames++
+			p.videoFrames++
 		} else if ch == session.ChanAudio {
-			p.AudioFrames++
+			p.audioFrames++
 		}
 		p.mu.Unlock()
 		if ch == session.ChanVideo && p.SkipVideoAck.Load() {
@@ -252,7 +268,7 @@ func (p *Peer) SendTouch(x, y uint32) error {
 	msg := frame.PutU16(nil, session.InputEvent)
 	msg = append(msg, encodeKV(3, te)...)
 	p.mu.Lock()
-	p.TouchesSent++
+	p.touchesSent++
 	p.mu.Unlock()
 	return p.enqueue(session.ChanInput, frame.FlagBulk|frame.FlagEncrypted|frame.FlagSpecific, msg)
 }

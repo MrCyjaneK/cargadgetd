@@ -264,7 +264,22 @@ func (m *MD) serviceAudioOne() {
 	}
 }
 
+// mediaChannels returns the video and audio channel ids parsed from the SDR.
+// Run starts the writer before the reader parses the SDR, so a read from the
+// writer goroutine can overlap the SDR writes. Take m.mu to pair with them.
+// Callers that run after WaitReady already have the happens-before edge from
+// the closed ready channel and may read the fields directly.
+func (m *MD) mediaChannels() (video, audio uint8) {
+	m.mu.Lock()
+	video, audio = m.VideoCh, m.AudioCh
+	m.mu.Unlock()
+	return
+}
+
 func (m *MD) writeOut(msg outMsg) {
+	// Snapshot the audio channel: the SDR may still be parsing on the reader
+	// goroutine while the writer services pings/handshake frames.
+	_, audioCh := m.mediaChannels()
 	// USB media (incl. PCM) must use AIO+yield. Ctrl/pongs stay on the raw
 	// writer so a nested sync pong during media AIO can still land; switching
 	// pongs to AIO regressed video-only soaks (2026-08-12).
@@ -311,11 +326,11 @@ func (m *MD) writeOut(msg outMsg) {
 		m.fail(err)
 	} else if err != nil {
 		m.log.Printf("media tx error (drop): %v", err)
-		if m.usbBulk && msg.channel == m.AudioCh && m.audioInFlight.Load() > 0 {
+		if m.usbBulk && msg.channel == audioCh && m.audioInFlight.Load() > 0 {
 			m.audioInFlight.Add(-1)
 		}
 	}
-	if m.usbBulk && msg.channel == m.AudioCh && err == nil {
+	if m.usbBulk && msg.channel == audioCh && err == nil {
 		m.serviceCtrl()
 		// Brief gap after PCM so the HU can emit video MediaAck/pings on OUT
 		// before the next IN URB (TCP A/V is green; USB needs breathing room).
@@ -348,13 +363,14 @@ func (m *MD) logTX(channel, flags uint8, n int) {
 
 // writeMedia sends media, fragmenting so each AA frame is one TLS record.
 func (m *MD) writeMedia(msg outMsg) {
+	videoCh, audioCh := m.mediaChannels()
 	if msg.drop != nil && msg.drop.Load() {
-		if m.usbBulk && msg.channel == m.VideoCh {
+		if m.usbBulk && msg.channel == videoCh {
 			if m.videoInFlight.Load() > 0 {
 				m.videoInFlight.Add(-1)
 			}
 		}
-		if m.usbBulk && msg.channel == m.AudioCh {
+		if m.usbBulk && msg.channel == audioCh {
 			if m.audioInFlight.Load() > 0 {
 				m.audioInFlight.Add(-1)
 			}
@@ -410,10 +426,10 @@ func (m *MD) writeMedia(msg outMsg) {
 	}
 	if err != nil && !errors.Is(err, errSendCanceled) {
 		m.log.Printf("media tx error (drop): %v", err)
-		if m.usbBulk && msg.channel == m.VideoCh && m.videoInFlight.Load() > 0 {
+		if m.usbBulk && msg.channel == videoCh && m.videoInFlight.Load() > 0 {
 			m.videoInFlight.Add(-1)
 		}
-		if m.usbBulk && msg.channel == m.AudioCh && m.audioInFlight.Load() > 0 {
+		if m.usbBulk && msg.channel == audioCh && m.audioInFlight.Load() > 0 {
 			m.audioInFlight.Add(-1)
 		}
 	}
@@ -1047,8 +1063,8 @@ func (m *MD) parseSDR(body []byte) {
 		}
 		switch kind {
 		case "video":
-			m.VideoCh = uint8(id)
 			m.mu.Lock()
+			m.VideoCh = uint8(id)
 			m.videoCfgs = parseMediaVideoConfigs(channelMedia(msg))
 			cfgs := append([]videoCfg(nil), m.videoCfgs...)
 			m.mu.Unlock()
@@ -1060,10 +1076,10 @@ func (m *MD) parseSDR(body []byte) {
 			m.log.Printf("SDR audio channel=%d type=%s configs=%s", id, audioTypeName(typ), formatAudioCfgs(cfgs))
 			audioSinks = append(audioSinks, audioSink{Ch: uint8(id), Type: typ, Cfgs: cfgs})
 		case "input":
-			m.InputCh = uint8(id)
 			w, h := parseInputScreenSize(msg)
 			btns := parseInputButtons(msg)
 			m.mu.Lock()
+			m.InputCh = uint8(id)
 			m.inputW, m.inputH = w, h
 			m.inputButtons = btns
 			m.mu.Unlock()
@@ -1074,9 +1090,9 @@ func (m *MD) parseSDR(body []byte) {
 			}
 			m.capturef("SDR", "input ch=%d touch=%dx%d buttons=%v blob=%x", id, w, h, btns, msg)
 		case "sensor":
-			m.SensorCh = uint8(id)
 			types := parseSensorTypes(msg)
 			m.mu.Lock()
+			m.SensorCh = uint8(id)
 			m.sensorTypes = types
 			m.mu.Unlock()
 			m.log.Printf("SDR sensor channel=%d types=%s blob=%x", id, formatSensorTypes(types), msg)

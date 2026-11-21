@@ -175,7 +175,14 @@ func TestWaitDisconnect(t *testing.T) {
 
 func TestWaitDisconnectAOADip(t *testing.T) {
 	oldOn, oldEx, oldN := onlineFiles, extconFiles, confirmOffline
-	t.Cleanup(func() { onlineFiles, extconFiles, confirmOffline = oldOn, oldEx, oldN })
+	stop := make(chan struct{})
+	exited := make(chan struct{})
+	// Stop and join the waiter before restoring the package globals it reads.
+	t.Cleanup(func() {
+		close(stop)
+		<-exited
+		onlineFiles, extconFiles, confirmOffline = oldOn, oldEx, oldN
+	})
 	confirmOffline = 4
 	dir := t.TempDir()
 	p := filepath.Join(dir, "online")
@@ -185,10 +192,9 @@ func TestWaitDisconnectAOADip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	done := make(chan struct{})
 	go func() {
-		WaitDisconnect(nil)
-		close(done)
+		WaitDisconnect(stop)
+		close(exited)
 	}()
 	time.Sleep(20 * time.Millisecond)
 	if err := os.WriteFile(p, []byte("0\n"), 0644); err != nil {
@@ -200,7 +206,7 @@ func TestWaitDisconnectAOADip(t *testing.T) {
 	}
 	time.Sleep(600 * time.Millisecond)
 	select {
-	case <-done:
+	case <-exited:
 		t.Fatal("AOA VBUS dip must not count as unplug")
 	default:
 	}
