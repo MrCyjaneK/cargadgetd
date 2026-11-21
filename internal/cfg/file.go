@@ -22,6 +22,7 @@ type fileConfig struct {
 
 type fileDaemon struct {
 	Transport *string `yaml:"transport"`
+	Peer      *string `yaml:"peer"`
 	Listen    *string `yaml:"listen"`
 	Control   *string `yaml:"control"`
 	Certs     *string `yaml:"certs"`
@@ -92,6 +93,9 @@ func (f fileConfig) merge(dst *Config) {
 		d := f.Daemon
 		if d.Transport != nil {
 			dst.Daemon.Transport = NormalizeTransport(*d.Transport)
+		}
+		if d.Peer != nil {
+			dst.Daemon.Peer = strings.TrimSpace(*d.Peer)
 		}
 		if d.Listen != nil {
 			dst.Daemon.Listen = *d.Listen
@@ -219,6 +223,7 @@ type outConfig struct {
 
 type outDaemon struct {
 	Transport string `yaml:"transport"`
+	Peer      string `yaml:"peer"`
 	Listen    string `yaml:"listen"`
 	Control   string `yaml:"control"`
 	Certs     string `yaml:"certs"`
@@ -275,6 +280,7 @@ func encodeYAML(c *Config) ([]byte, error) {
 	doc := outConfig{
 		Daemon: outDaemon{
 			Transport: c.Daemon.Transport,
+			Peer:      c.Daemon.Peer,
 			Listen:    c.Daemon.Listen,
 			Control:   c.Daemon.Control,
 			Certs:     c.Daemon.Certs,

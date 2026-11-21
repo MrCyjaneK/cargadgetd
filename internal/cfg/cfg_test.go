@@ -276,6 +276,9 @@ func TestTransportUnknownIsUSB(t *testing.T) {
 	if NormalizeTransport(" wireless ") != TransportWireless || NormalizeTransport("WIRELESS") != TransportWireless {
 		t.Fatal("wireless")
 	}
+	if NormalizeTransport(" wpp ") != TransportWPP || NormalizeTransport("WPP") != TransportWPP {
+		t.Fatal("wpp")
+	}
 	dir := t.TempDir()
 	p := filepath.Join(dir, "t.yaml")
 	if err := os.WriteFile(p, []byte("daemon:\n  transport: \"wireless\"\n"), 0o644); err != nil {
@@ -297,6 +300,16 @@ func TestTransportUnknownIsUSB(t *testing.T) {
 	}
 	if c.Daemon.Transport != TransportUSB {
 		t.Fatalf("typo transport %q", c.Daemon.Transport)
+	}
+	if err := os.WriteFile(p, []byte("daemon:\n  transport: wpp\n  peer: \"aa:bb:cc:dd:ee:ff\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c = Default()
+	if err := applyFile(c, p); err != nil {
+		t.Fatal(err)
+	}
+	if c.Daemon.Transport != TransportWPP || c.Daemon.Peer != "aa:bb:cc:dd:ee:ff" {
+		t.Fatalf("%+v", c.Daemon)
 	}
 }
 

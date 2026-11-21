@@ -25,7 +25,7 @@ fi
 log() { echo "$(date '+%Y-%m-%dT%H:%M:%S') $*"; }
 
 # daemon.transport from the user YAML. Missing, or anything other than
-# wireless, is usb.
+# wireless or wpp, is usb.
 transport_mode() {
 	f="/home/${USER_NAME}/.config/cargadgetd/config.yaml"
 	[ -f "$f" ] || {
@@ -36,10 +36,11 @@ transport_mode() {
 		/^daemon:/ { in_d = 1; next }
 		in_d && /^[^ #]/ { in_d = 0 }
 		in_d && $1 == "transport:" {
-			v = $2
+			v = tolower($2)
 			gsub(/"/, "", v)
 			gsub(/\047/, "", v)
 			if (v == "wireless") print "wireless"
+			else if (v == "wpp") print "wpp"
 			else print "usb"
 			found = 1
 			exit
@@ -56,6 +57,40 @@ leave_wireless() {
 	chown "${USER_NAME}:${USER_NAME}" "$MD_LOG" 2>/dev/null || true
 	"$GADGET" -usb-off >>"$MD_LOG" 2>&1 || true
 	exit 78
+}
+
+# Accessory gadget stays down. Bluetooth and Wi-Fi are left as the user set
+# them. The MD blocks on the system bus until BlueZ signals, and this waiter
+# blocks in the foreground until that process exits. Exit 78 is only the
+# wireless path.
+run_wpp() {
+	log "transport wpp — USB off"
+	touch "$MD_LOG"
+	chown "${USER_NAME}:${USER_NAME}" "$MD_LOG" 2>/dev/null || true
+	"$GADGET" -usb-off >>"$MD_LOG" 2>&1 || true
+	kept=$(rotate_log || true)
+	touch "$MD_LOG"
+	chown "${USER_NAME}:${USER_NAME}" "$MD_LOG" 2>/dev/null || true
+	if [ -n "$kept" ]; then
+		log "kept previous log as $kept" | tee -a "$MD_LOG"
+	fi
+	kill_md
+	log "=== MD start wpp ===" | tee -a "$MD_LOG"
+	start=$(date +%s)
+	su -s /bin/sh "$USER_NAME" -c "
+		export HOME=/home/${USER_NAME}
+		export XDG_RUNTIME_DIR=/run/user/${UID_NUM}
+		export GLIBC_TUNABLES=glibc.rtld.optional_static_tls=65536
+		cd /usr/share/cargadgetd/bin
+		exec '$MD' >>'$MD_LOG' 2>&1
+	"
+	now=$(date +%s)
+	# A crash exits immediately. Sleep here so the outer loop cannot
+	# respawn it in a tight cycle. A long run is a finished session.
+	if [ $((now - start)) -lt 20 ]; then
+		log "MD exited quickly — sleeping" | tee -a "$MD_LOG"
+		sleep 30
+	fi
 }
 
 # Rename a non-empty live log to cargadgetd-YYYYMMDD-HHMMSS.log.
@@ -146,8 +181,13 @@ trap 'if [ "$gp" -ne 0 ]; then kill "$gp" 2>/dev/null || true; wait "$gp" 2>/dev
 # and the MD's gadget -stop then killed the new waiter until the start
 # limit left nobody listening for the next START.
 while true; do
-	if [ "$(transport_mode)" = "wireless" ]; then
+	mode=$(transport_mode)
+	if [ "$mode" = "wireless" ]; then
 		leave_wireless
+	fi
+	if [ "$mode" = "wpp" ]; then
+		run_wpp
+		continue
 	fi
 	kept=$(rotate_log || true)
 	touch "$MD_LOG"

@@ -12,6 +12,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -28,6 +29,7 @@ import (
 	"github.com/cargadgetd/cargadgetd/internal/aoa"
 	"github.com/cargadgetd/cargadgetd/internal/ffs"
 	"github.com/cargadgetd/cargadgetd/internal/usbcable"
+	"github.com/cargadgetd/cargadgetd/internal/wifi"
 )
 
 func main() {
@@ -40,7 +42,26 @@ func main() {
 	noModed := flag.Bool("no-usb-moded", false, "do not touch usb-moded")
 	aoaWait := flag.Bool("aoa", false, "wait for AOA START (Android Auto), then bind the accessory gadget")
 	aoaService := flag.String("aoa-service", "", "start, stop, or restart cargadgetd-aoa.service (setuid)")
+	wifiJoin := flag.Bool("wifi-join", false, "join a WPA2 network; credentials are length-prefixed on stdin (setuid)")
 	flag.Parse()
+
+	if *wifiJoin {
+		if os.Geteuid() != 0 {
+			log.Fatal("wifi join needs the setuid cargadgetd-gadget")
+		}
+		if err := becomeRoot(); err != nil {
+			log.Fatalf("become root: %v", err)
+		}
+		ssid, pass, err := wifi.ReadCred(os.Stdin)
+		if err != nil {
+			log.Fatalf("wifi credentials: %v", err)
+		}
+		if err := wifi.Connect(context.Background(), ssid, pass); err != nil {
+			fmt.Fprintln(os.Stderr, err.Error())
+			os.Exit(1)
+		}
+		return
+	}
 
 	if *aoaService != "" {
 		switch *aoaService {
@@ -356,7 +377,7 @@ func stopRunningAgents() error {
 			continue
 		}
 		joined := strings.Join(fields[1:], " ")
-		if strings.Contains(joined, " -stop") {
+		if strings.Contains(joined, " -stop") || strings.Contains(joined, "-wifi-join") {
 			continue
 		}
 		if !strings.Contains(joined, "cargadgetd-gadget") && !strings.Contains(joined, "gadgetctl") {

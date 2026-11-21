@@ -17,11 +17,13 @@ const (
 // coreSpecs is the daemon YAML this library advertises. Plugin-owned keys
 // stay on those plugins. The settings UI reads cargadgetd_app_daemon_settings_*.
 type coreSpec struct {
-	label string
-	kind  int
-	enums string
-	get   func(coreState) string
-	set   func(string) error
+	label   string
+	kind    int
+	enums   string
+	enumsFn func() string
+	accept  func(string) bool
+	get     func(coreState) string
+	set     func(string) error
 }
 
 var coreSpecs = []coreSpec{
@@ -53,7 +55,8 @@ var coreSpecs = []coreSpec{
 	{label: "Music sink", kind: settingString, get: func(s coreState) string { return s.sink }, set: saveSink},
 	{label: "Music player", kind: settingString, get: func(s coreState) string { return s.player }, set: saveQuoted("music", "player")},
 	{label: "GPS", kind: settingEnum, enums: "GeoClue,Mock", get: func(s coreState) string { return gpsLabel(s.gps) }, set: saveGPS},
-	{label: "Transport", kind: settingEnum, enums: "usb,wireless", get: func(s coreState) string { return s.transport }, set: saveTransport},
+	{label: "Transport", kind: settingEnum, enums: "usb,wireless,wpp", get: func(s coreState) string { return s.transport }, set: saveTransport},
+	{label: "Head unit", kind: settingEnum, enumsFn: peerEnums, accept: peerChoice, get: func(s coreState) string { return peerChoiceLabel(s.peer) }, set: savePeer},
 	{label: "Listen", kind: settingString, get: func(s coreState) string { return s.listen }, set: saveListen},
 	{label: "Control", kind: settingString, get: func(s coreState) string { return s.control }, set: saveControl},
 	{label: "Certs", kind: settingString, get: func(s coreState) string { return s.certs }, set: saveCerts},
@@ -153,10 +156,14 @@ func saveVideoSize(v string) error {
 const packagedGadget = "/usr/share/cargadgetd/bin/cargadgetd-gadget"
 
 func transportMode(v string) string {
-	if strings.EqualFold(strings.TrimSpace(v), "wireless") {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "wireless":
 		return "wireless"
+	case "wpp":
+		return "wpp"
+	default:
+		return "usb"
 	}
-	return "usb"
 }
 
 func saveTransport(v string) error {
@@ -167,15 +174,24 @@ func saveTransport(v string) error {
 	if _, err := os.Stat(packagedGadget); err != nil {
 		return nil
 	}
-	if mode == "wireless" {
+	switch mode {
+	case "wireless":
 		// Stop the AOA waiter before restoring the gadget. Leaving it up
 		// would poll the config and keep the CPU out of deep idle.
 		if err := runGadget("-aoa-service", "stop"); err != nil {
 			return err
 		}
 		return runGadget("-usb-off")
+	case "wpp":
+		// The accessory gadget stays down. Restarting the unit is what
+		// brings Bluetooth up and starts the dialer.
+		if err := runGadget("-usb-off"); err != nil {
+			return err
+		}
+		return runGadget("-aoa-service", "restart")
+	default:
+		return runGadget("-aoa-service", "start")
 	}
-	return runGadget("-aoa-service", "start")
 }
 
 func runGadget(args ...string) error {
@@ -260,6 +276,9 @@ func coreSettingsEnums(i int) string {
 	if !ok {
 		return ""
 	}
+	if s.enumsFn != nil {
+		return s.enumsFn()
+	}
 	return s.enums
 }
 
@@ -330,7 +349,11 @@ func coreSettingsSetEnum(i int, v string) int {
 	if !ok || s.kind != settingEnum {
 		return coreFail("not an enum")
 	}
-	if !enumHas(s.enums, v) {
+	if s.accept != nil {
+		if !s.accept(v) {
+			return coreFail("unknown value")
+		}
+	} else if !enumHas(s.enums, v) {
 		return coreFail("unknown value")
 	}
 	if err := s.set(v); err != nil {

@@ -169,6 +169,12 @@ func TestCoreTransportWirelessSkipsMissingGadget(t *testing.T) {
 	if loadCore().transport != "wireless" {
 		t.Fatalf("transport %s", loadCore().transport)
 	}
+	if coreSettingsSetEnum(row, "wpp") != 0 {
+		t.Fatal(coreSettingsError())
+	}
+	if loadCore().transport != "wpp" {
+		t.Fatalf("transport %s", loadCore().transport)
+	}
 	if coreSettingsSetEnum(row, "nope") == 0 {
 		t.Fatal("unknown transport accepted")
 	}

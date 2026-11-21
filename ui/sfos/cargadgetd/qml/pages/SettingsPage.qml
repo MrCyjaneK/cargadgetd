@@ -11,6 +11,15 @@ Page {
             Daemon.reloadYaml()
     }
 
+    Timer {
+        id: deferApply
+        interval: 0
+        property var section
+        property var row
+        property var value
+        onTriggered: page.apply(section, row, value)
+    }
+
     Component.onCompleted: {
         PluginSettings.reload()
         _ready = true
@@ -69,10 +78,10 @@ Page {
                                                     enumBox.currentIndex = index
                                             }
                                             onClicked: {
-                                                var section = row.section
-                                                var r = row.row
-                                                var v = text
-                                                Qt.callLater(function() { page.apply(section, r, v) })
+                                                deferApply.section = row.section
+                                                deferApply.row = row.row
+                                                deferApply.value = text
+                                                deferApply.restart()
                                             }
                                         }
                                     }
