@@ -40,6 +40,7 @@ type coreState struct {
 	player     string
 	gps        string
 	transport  string
+	peer       string
 	listen     string
 	control    string
 	certs      string
@@ -147,6 +148,7 @@ func (e errString) Error() string { return string(e) }
 type coreFile struct {
 	Daemon *struct {
 		Transport *string `yaml:"transport"`
+		Peer      *string `yaml:"peer"`
 		Listen    *string `yaml:"listen"`
 		Control   *string `yaml:"control"`
 		Certs     *string `yaml:"certs"`
@@ -205,6 +207,9 @@ func applyCore(path string, dst *coreState) {
 	if f.Daemon != nil {
 		if f.Daemon.Transport != nil {
 			dst.transport = transportMode(*f.Daemon.Transport)
+		}
+		if f.Daemon.Peer != nil {
+			dst.peer = canonMAC(*f.Daemon.Peer)
 		}
 		if f.Daemon.Listen != nil && strings.TrimSpace(*f.Daemon.Listen) != "" {
 			dst.listen = strings.TrimSpace(*f.Daemon.Listen)

@@ -15,4 +15,7 @@ func TestEffectiveListenSkipsFFSWhenWireless(t *testing.T) {
 	if got := effectiveListen("tcp://10.0.0.2:9", "ffs:///dev/usb-ffs/aa", "wireless"); got != "tcp://10.0.0.2:9" {
 		t.Fatalf("explicit tcp: %s", got)
 	}
+	if got := effectiveListen("ffs:///dev/usb-ffs/aa", "tcp://127.0.0.1:5277", "wpp"); got != "tcp://127.0.0.1:5277" {
+		t.Fatalf("wpp drops ffs: %s", got)
+	}
 }

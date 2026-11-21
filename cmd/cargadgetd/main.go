@@ -138,6 +138,11 @@ func main() {
 		runSession(md, *autoAV, strings.HasPrefix(listen, "ffs://"))
 	}
 
+	if conf0.Daemon.Transport == cfg.TransportWPP {
+		runWPP(serve)
+		return
+	}
+
 	if strings.HasPrefix(listen, "ffs://") {
 		dir := strings.TrimPrefix(listen, "ffs://")
 		if dir == "" {
@@ -743,11 +748,11 @@ func bytesTrim(b []byte) string {
 	return strings.TrimSpace(string(b))
 }
 
-// effectiveListen drops an ffs:// address when transport is wireless, even if
-// the USB launcher passed -listen ffs://. The TCP or unix address in the
-// config is used instead, then the compiled default.
+// effectiveListen drops an ffs:// address when transport is wireless or wpp,
+// even if the USB launcher passed -listen ffs://. The TCP or unix address in
+// the config is used instead, then the compiled default.
 func effectiveListen(chosen, configured, transport string) string {
-	if transport != cfg.TransportWireless || !strings.HasPrefix(chosen, "ffs://") {
+	if (transport != cfg.TransportWireless && transport != cfg.TransportWPP) || !strings.HasPrefix(chosen, "ffs://") {
 		return chosen
 	}
 	if configured != "" && !strings.HasPrefix(configured, "ffs://") {

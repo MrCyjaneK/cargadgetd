@@ -28,20 +28,29 @@ const (
 	TransportUSB = "usb"
 	// TransportWireless leaves the gadget down. The MD does not open FunctionFS.
 	TransportWireless = "wireless"
+	// TransportWPP leaves the gadget down and dials the head unit over Bluetooth.
+	TransportWPP = "wpp"
 )
 
-// NormalizeTransport returns wireless only for that exact mode. Anything else,
+// NormalizeTransport returns wireless or wpp for those modes. Anything else,
 // including a typo, stays usb so a bad key cannot drop the cable path.
 func NormalizeTransport(v string) string {
-	if strings.EqualFold(strings.TrimSpace(v), TransportWireless) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case TransportWireless:
 		return TransportWireless
+	case TransportWPP:
+		return TransportWPP
+	default:
+		return TransportUSB
 	}
-	return TransportUSB
 }
 
 type Daemon struct {
-	// Transport is usb or wireless. Unknown values are usb.
+	// Transport is usb, wireless, or wpp. Unknown values are usb.
 	Transport string
+	// Peer is the head-unit Bluetooth MAC for transport wpp. The passphrase
+	// arrives in the wireless setup exchange and is not config.
+	Peer string
 	// Listen is tcp://, unix://, or ffs:///. Device USB launchers pass -listen.
 	Listen string
 	// Control is the JSON control plane.
