@@ -9,7 +9,7 @@ import (
 
 func TestDefaultMatchesDocumentedZeros(t *testing.T) {
 	c := Default()
-	if c.Daemon.Transport != TransportUSB || c.Daemon.Listen != "tcp://127.0.0.1:5277" || c.Daemon.Control != "tcp://127.0.0.1:9277" || c.Daemon.Certs != "/usr/lib/cargadgetd/plugins/reversegearhead.so" {
+	if c.Daemon.Transport != TransportUSB || c.Daemon.Listen != "ffs:///dev/usb-ffs/aa" || c.Daemon.Control != "tcp://127.0.0.1:9277" || c.Daemon.Certs != "~/.local/share/cargadgetd/certs" {
 		t.Fatalf("daemon %+v", c.Daemon)
 	}
 	if c.Video.Encoder != "droidmedia" || c.Video.Size != "auto" || c.Video.ConfigIndex != -1 || c.Video.FrameMs != 33 || !c.Video.Live {
@@ -269,6 +269,55 @@ func TestSearchPathsOmitsUIYaml(t *testing.T) {
 	}
 }
 
+func TestTransportModes(t *testing.T) {
+	seen := map[string]bool{}
+	var require bool
+	for _, m := range TransportModes() {
+		if m.ID == "" || m.Title == "" || m.Body == "" {
+			t.Fatalf("empty mode %+v", m)
+		}
+		if strings.Contains(m.Title, ",") {
+			t.Fatalf("title %q has a comma; the settings row splits on commas", m.Title)
+		}
+		if seen[m.ID] {
+			t.Fatalf("duplicate id %s", m.ID)
+		}
+		seen[m.ID] = true
+		id, ok := ParseTransport(m.Title)
+		if !ok || id != m.ID {
+			t.Fatalf("title %q -> %q ok=%v", m.Title, id, ok)
+		}
+		id, ok = ParseTransport(m.ID)
+		if !ok || id != m.ID {
+			t.Fatalf("id %q not accepted", m.ID)
+		}
+		if TransportTitle(m.ID) != m.Title {
+			t.Fatalf("title %s", m.ID)
+		}
+		if m.RequirePeer {
+			require = true
+			if !m.NeedsPeer || m.Hint == "" {
+				t.Fatalf("require peer without picker or hint: %+v", m)
+			}
+		}
+		if NormalizeTransport(strings.ToUpper(m.ID)) != m.ID {
+			t.Fatalf("normalize %s", m.ID)
+		}
+	}
+	if !require {
+		t.Fatal("no mode requires a head unit")
+	}
+	if _, ok := ParseTransport("nope"); ok {
+		t.Fatal("unknown accepted")
+	}
+	if TransportTitle("custom") != "custom" {
+		t.Fatal("unknown id rewritten")
+	}
+	if !strings.Contains(TransportTitles(), "Bluetooth") {
+		t.Fatal(TransportTitles())
+	}
+}
+
 func TestTransportUnknownIsUSB(t *testing.T) {
 	if NormalizeTransport("") != TransportUSB || NormalizeTransport("nope") != TransportUSB || NormalizeTransport("USB") != TransportUSB {
 		t.Fatal("unknown transport must stay usb")
@@ -288,7 +337,7 @@ func TestTransportUnknownIsUSB(t *testing.T) {
 	if err := applyFile(c, p); err != nil {
 		t.Fatal(err)
 	}
-	if c.Daemon.Transport != TransportWireless || c.Daemon.Listen != "tcp://127.0.0.1:5277" {
+	if c.Daemon.Transport != TransportWireless || c.Daemon.Listen != "ffs:///dev/usb-ffs/aa" {
 		t.Fatalf("%+v", c.Daemon)
 	}
 	if err := os.WriteFile(p, []byte("daemon:\n  transport: cable\n"), 0o644); err != nil {

@@ -17,7 +17,7 @@ import (
 //
 // Sync write(2) on FunctionFS holds epfile->mutex across wait_for_completion
 // of the USB request (see f_fs.c ffs_epfile_io). O_NONBLOCK only affects the
-// enable-wait and mutex_trylock — once a URB is queued, write(2) blocks until
+// enable-wait and mutex_trylock - once a URB is queued, write(2) blocks until
 // the host completes IN. That pinned our single session writer so ping_rx
 // continued while pong_tx could not run (freeze log: stall n=42 = encrypted
 // pong). AIO returns after usb_ep_queue and releases the mutex, so a yield
@@ -166,7 +166,7 @@ func (a *aioContext) submitPwrite(fd int, buf []byte) (*iocb, <-chan int64, erro
 func (e *Endpoints) initAIO() {
 	ctx, err := aioSetup()
 	if err != nil {
-		log.Printf("ffs aio unavailable (%v) — sync writes (pongs may stall behind media)", err)
+		log.Printf("ffs aio unavailable (%v) - sync writes (pongs may stall behind media)", err)
 		return
 	}
 	e.aio = ctx
@@ -193,7 +193,7 @@ func (e *Endpoints) writeAIO(p []byte, yield func()) (int, error) {
 		if err == unix.EAGAIN || err == unix.EBUSY {
 			return 0, ErrWriteBusy
 		}
-		log.Printf("ffs aio submit failed (%v) — sync fallback", err)
+		log.Printf("ffs aio submit failed (%v) - sync fallback", err)
 		return e.writeSync(p)
 	}
 	defer runtime.KeepAlive(buf)
@@ -219,7 +219,7 @@ func (e *Endpoints) writeAIO(p []byte, yield func()) (int, error) {
 			}
 			return len(buf), nil
 		case <-timer.C:
-			log.Printf("ffs write stall >%v (aio n=%d) — closing endpoints", stallLimit, len(buf))
+			log.Printf("ffs write stall >%v (aio n=%d) - closing endpoints", stallLimit, len(buf))
 			e.fail(fmt.Errorf("%w (write stall)", ErrEndpointReset))
 			_ = e.epW.Close()
 			_ = e.epR.Close()

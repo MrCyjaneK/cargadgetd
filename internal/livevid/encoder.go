@@ -3,6 +3,8 @@ package livevid
 import (
 	"image"
 	"strings"
+
+	"github.com/cargadgetd/cargadgetd/internal/videoenc"
 )
 
 // codec turns one RGBA frame into one Annex-B H.264 access unit.
@@ -14,8 +16,14 @@ type codec interface {
 
 func openCodec(w, h, fps, bps int, want string) (codec, error) {
 	switch strings.ToLower(strings.TrimSpace(want)) {
-	case "software":
+	case videoenc.Software:
 		return newX264(w, h, fps)
+	case videoenc.SoftwareFast:
+		return newX264Fast(w, h, fps)
+	case videoenc.Hardware:
+		return newDroid(w, h, fps, bps)
+	case videoenc.HardwareAlt:
+		return newDroidAlt(w, h, fps, bps)
 	default:
 		return newDroid(w, h, fps, bps)
 	}

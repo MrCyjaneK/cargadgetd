@@ -194,7 +194,7 @@ func (p *Peer) Run() error {
 			}
 
 		default:
-			p.log.Printf("hu: unhandled ctrl 0x%04x len=%d — fixture ignores", msgType, len(body))
+			p.log.Printf("hu: unhandled ctrl 0x%04x len=%d - fixture ignores", msgType, len(body))
 		}
 	}
 }
@@ -311,7 +311,7 @@ func channelMsg(id uint8, specific []byte) []byte {
 }
 
 func sensorChannel() []byte {
-	// sensor_channel field 2: sensors repeated int32 — driving status = 10
+	// sensor_channel field 2: sensors repeated int32 - driving status = 10
 	inner := []byte{0x08, 10}
 	return encodeKV(2, inner)
 }

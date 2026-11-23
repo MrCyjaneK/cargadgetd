@@ -251,7 +251,7 @@ func (s *Session) Encrypt(plain []byte) ([]byte, error) {
 		plain = plain[int(n):]
 	}
 	if nrec := countTLSAppRecords(out); nrec != 1 {
-		// AA/DHU SSL_read once per AA frame — multi-record ciphertext desyncs the peer.
+		// AA/DHU SSL_read once per AA frame - multi-record ciphertext desyncs the peer.
 		return nil, fmt.Errorf("ssl: Encrypt plain=%d produced %d TLS records (need 1)", wrote, nrec)
 	}
 	return out, nil

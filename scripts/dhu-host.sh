@@ -49,7 +49,7 @@ sys.exit(rc if rc is not None else 1)
 ' "$secs" "$@"
 }
 
-# dhu_usb_present VID PID — hex, no 0x. True when that device is on the host bus.
+# dhu_usb_present VID PID - hex, no 0x. True when that device is on the host bus.
 dhu_usb_present() {
   local vid="$1" pid="$2"
   if command -v lsusb >/dev/null 2>&1; then

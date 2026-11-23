@@ -12,7 +12,14 @@ func yuvSize(w, h int) int {
 	return w*h + w*h/2
 }
 
+// rgbaToNV12, when set, is the platform RGBA-to-NV12 conversion.
+var rgbaToNV12 func(dst []byte, src *image.RGBA)
+
 func rgbaToYUV(dst []byte, src *image.RGBA, layout int) {
+	if layout == yuvNV12 && rgbaToNV12 != nil {
+		rgbaToNV12(dst, src)
+		return
+	}
 	b := src.Bounds()
 	w, h := b.Dx(), b.Dy()
 	yp := dst[:w*h]

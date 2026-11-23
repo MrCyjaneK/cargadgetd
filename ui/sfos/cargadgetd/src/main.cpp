@@ -16,6 +16,7 @@ Q_DECL_EXPORT int main(int argc, char *argv[])
 
     DaemonController daemon;
     PluginSettings plugins;
+    plugins.reload();
     view->rootContext()->setContextProperty(QStringLiteral("Daemon"), &daemon);
     view->rootContext()->setContextProperty(QStringLiteral("PluginSettings"), &plugins);
 

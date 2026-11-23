@@ -81,7 +81,7 @@ func TestParseSinkInputsAndPickPlayer(t *testing.T) {
 		t.Fatalf("pick %q %q %v", id, sink, ok)
 	}
 
-	// Do not key off application names — a corked player must lose to the live one.
+	// Do not key off application names - a corked player must lose to the live one.
 	id, _, ok = pickPlayer([]sinkInput{
 		{ID: "9", Sink: "0", Corked: "yes", Group: "player"},
 		{ID: "5", Sink: "0", Corked: "no", Group: "player"},

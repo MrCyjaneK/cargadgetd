@@ -197,7 +197,7 @@ func TestGNSSGate(t *testing.T) {
 	if !gnssFix(p) || gnssFix(net) {
 		t.Fatal("accuracy gate")
 	}
-	note := SatNote{Gain: true, Title: "E26", Sub: "Galileo · European Union"}
+	note := SatNote{Gain: true, Title: "E26", Sub: "Galileo - European Union"}
 	if note.Flash() != "LOCK E26 Galileo" {
 		t.Fatal(note.Flash())
 	}

@@ -4,7 +4,13 @@ import "pages"
 
 ApplicationWindow {
     id: appWindow
-    initialPage: Component { MainPage { } }
+    initialPage: Daemon.onboardingDone
+                 ? Qt.resolvedUrl("pages/MainPage.qml")
+                 : (Daemon.certsMissing
+                    ? Qt.resolvedUrl("pages/WelcomePage.qml")
+                    : (Daemon.hasAddons()
+                       ? Qt.resolvedUrl("pages/PairPage.qml")
+                       : Qt.resolvedUrl("pages/AddonsPage.qml")))
     cover: Qt.resolvedUrl("cover/CoverPage.qml")
     allowedOrientations: defaultAllowedOrientations
 }

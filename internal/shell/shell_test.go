@@ -30,6 +30,7 @@ func (f *fakeRunner) Stop() {
 func (f *fakeRunner) HuInput(name string, pressed int) {
 	f.hu = append(f.hu, name)
 }
+func (f *fakeRunner) NowPlaying() (NowPlaying, bool) { return NowPlaying{}, false }
 func (f *fakeRunner) GPSFix(hasPos int, lat, lon, accM float64, hasSpeed, kmh, hasCourse int, course float64, err string) {
 	f.gps = append(f.gps, gpsRec{kind: "fix", hasPos: hasPos, lat: lat, lon: lon, kmh: kmh, hasSpeed: hasSpeed, err: err})
 }
@@ -85,6 +86,38 @@ func TestFramePeriodDefaultAndSet(t *testing.T) {
 	s.SetFramePeriod(10 * time.Millisecond)
 	if s.FramePeriod() != MinFramePeriod {
 		t.Fatalf("floor %v", s.FramePeriod())
+	}
+}
+
+type liveRunner struct {
+	fakeRunner
+	np NowPlaying
+	ok bool
+}
+
+func (r *liveRunner) NowPlaying() (NowPlaying, bool) { return r.np, r.ok }
+
+func TestNowPlayingUsesFirstLiveApp(t *testing.T) {
+	s := New(800, 480, 48000, 2)
+	idle := &liveRunner{}
+	live := &liveRunner{ok: true, np: NowPlaying{Title: "Night", Artist: "fakemink", State: 2}}
+	s.attach(&App{ID: "hello", Name: "Hello", runner: idle})
+	s.attach(&App{ID: "music", Name: "Music", runner: live})
+	s.StartApps()
+	got, ok := s.NowPlaying()
+	if !ok || got.Title != "Night" || got.State != 2 {
+		t.Fatalf("%v %+v", ok, got)
+	}
+}
+
+func TestHuInputDeliversWithoutAVideoFrame(t *testing.T) {
+	s := New(800, 480, 48000, 2)
+	a := &fakeRunner{}
+	s.attach(&App{ID: "music", Name: "Music", runner: a})
+	s.StartApps()
+	s.HuInput("next", 1)
+	if len(a.hu) != 1 || a.hu[0] != "next" {
+		t.Fatalf("%v", a.hu)
 	}
 }
 

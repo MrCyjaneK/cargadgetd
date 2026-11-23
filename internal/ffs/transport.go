@@ -19,7 +19,7 @@ import (
 // usbReadBuf sizes each ep2 read() = one queued USB request. Must be a
 // multiple of 512 (FunctionFS returns EOVERFLOW if a packet exceeds the
 // queued request). mtu3 rejects anything longer than GPD_BUF_SIZE (65532)
-// with EOPNOTSUPP — the gen2cp warning still prints the larger 1048572
+// with EOPNOTSUPP - the gen2cp warning still prints the larger 1048572
 // limit, but the queue check fails on the 65532 clause first. 256KiB reads
 // never block for the version request on MT6858. 127*512 stays under it.
 const usbReadBuf = 127 * 512
@@ -55,7 +55,7 @@ func (writeBusyError) USBWriteBusy() {}
 
 // ErrWriteBusy means ep1 would block (host not reading IN yet) and nothing
 // has been written for this call. The session writer must service ctrl/pongs
-// and retry — a blocking Write held the mutex for seconds while ping_rx
+// and retry - a blocking Write held the mutex for seconds while ping_rx
 // continued, so DHU saw ping timeouts and tore the link down.
 var ErrWriteBusy error = writeBusyError{}
 
@@ -85,7 +85,7 @@ type Endpoints struct {
 	// active flips true once the HU has actually sent us bytes. Bus events
 	// before that (enumeration churn, authorized toggles, stale queued
 	// DISABLEs from before we opened ep0) are normal and must NOT kill the
-	// pending session — that left DHU stuck on "waiting for phone".
+	// pending session - that left DHU stuck on "waiting for phone".
 	active atomic.Bool
 	dead   atomic.Bool
 	fatal  chan error
@@ -259,7 +259,7 @@ func (e *Endpoints) writeSyncLocked(p []byte, seq uint64, ch, flags uint8, plen 
 		if e.dead.Load() {
 			return
 		}
-		log.Printf("ffs write stall >%v (seq=%d n=%d) — closing endpoints", stallLimit, seq, len(p))
+		log.Printf("ffs write stall >%v (seq=%d n=%d) - closing endpoints", stallLimit, seq, len(p))
 		e.fail(fmt.Errorf("%w (write stall)", ErrEndpointReset))
 		_ = e.epW.Close()
 		_ = e.epR.Close()
@@ -270,7 +270,7 @@ func (e *Endpoints) writeSyncLocked(p []byte, seq uint64, ch, flags uint8, plen 
 	// With O_NONBLOCK: if nothing is written yet, return ErrWriteBusy so the
 	// session writer can drain pongs and retry. Once any byte of this buffer
 	// is on the wire we must finish it (no channel interleaving mid-record).
-	// NOTE: sync f_fs still blocks until host completion after queue — see
+	// NOTE: sync f_fs still blocks until host completion after queue - see
 	// aio_linux.go. ErrWriteBusy only helps on mutex_trylock / not-enabled.
 	written := 0
 	for written < len(p) {
@@ -322,7 +322,7 @@ func (e *Endpoints) Close() error {
 }
 
 // pumpEp0 reads FunctionFS events (12-byte records: 8-byte setup union,
-// 1-byte type, 3 pad). We must be the ONLY ep0 event reader — with two
+// 1-byte type, 3 pad). We must be the ONLY ep0 event reader - with two
 // readers (old gadgetctl drained too) events raced and were silently lost.
 func (e *Endpoints) pumpEp0() {
 	const evSize = 12
@@ -350,19 +350,16 @@ func (e *Endpoints) pumpEp0() {
 			if !lastEnable.IsZero() {
 				sinceEn = "+" + time.Since(lastEnable).Round(time.Millisecond).String()
 			}
-			log.Printf("ffs ep0 event: %s (enable%s hu_bytes=%v)", name, sinceEn, e.active.Load())
+			log.Printf("ffs ep0 event: %s (enable %s hu_bytes=%v)", name, sinceEn, e.active.Load())
 			switch typ {
 			case ffsEventEnable:
 				lastEnable = time.Now()
 			case ffsEventDisable, ffsEventSuspend, ffsEventUnbind:
 				if e.active.Load() {
-					// FIFO state is gone; a partial in-flight AA/TLS frame is
-					// already truncated on the host side. Fail the session so
-					// we reconnect cleanly instead of feeding DHU garbage.
-					log.Printf("ffs ep0 %s after HU traffic (enable%s) — failing session", name, sinceEn)
+					log.Printf("ffs ep0 %s after HU traffic (enable %s) - failing session", name, sinceEn)
 					e.fail(fmt.Errorf("%w (%s)", ErrEndpointReset, name))
 				} else {
-					log.Printf("ffs ep0 %s before HU traffic (enable%s) — ignoring (enumeration churn)", name, sinceEn)
+					log.Printf("ffs ep0 %s before HU traffic (enable %s) - ignoring (enumeration churn)", name, sinceEn)
 				}
 			case ffsEventSetup:
 				if err := handleSetup(e.ep0, buf[off:off+8]); err != nil {

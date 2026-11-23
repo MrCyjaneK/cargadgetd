@@ -25,7 +25,7 @@ const (
 )
 
 // SetupAccessory writes descriptors + strings to ep0.
-// The returned ep0 file MUST stay open for the lifetime of the gadget bind —
+// The returned ep0 file MUST stay open for the lifetime of the gadget bind -
 // closing it resets FunctionFS (EBUSY / dead UDC).
 func SetupAccessory(ffsDir string) (*os.File, error) {
 	ep0 := filepath.Join(ffsDir, "ep0")

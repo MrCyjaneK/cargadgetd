@@ -11,10 +11,9 @@ set -u
 GADGET=/usr/share/cargadgetd/bin/cargadgetd-gadget
 MD=/usr/share/cargadgetd/bin/cargadgetd-md
 RESTORE=/usr/share/cargadgetd/music-loopback-restore.sh
-LISTEN=ffs:///dev/usb-ffs/aa
 USER_NAME=defaultuser
 UID_NUM=100000
-MD_LOG=/home/${USER_NAME}/cargadgetd.log
+MD_LOG=/tmp/cargadgetd.log
 SELF_LOG=/tmp/cargadgetd-aoa.log
 
 if [ "${1:-}" != --fg ]; then
@@ -52,7 +51,7 @@ transport_mode() {
 # One restore, then leave. Exit 78 is RestartPreventExitStatus, so systemd
 # does not start this waiter again. A poll here would wake the CPU forever.
 leave_wireless() {
-	log "transport wireless — USB off, exiting"
+	log "transport wireless - USB off, exiting"
 	touch "$MD_LOG"
 	chown "${USER_NAME}:${USER_NAME}" "$MD_LOG" 2>/dev/null || true
 	"$GADGET" -usb-off >>"$MD_LOG" 2>&1 || true
@@ -64,7 +63,7 @@ leave_wireless() {
 # blocks in the foreground until that process exits. Exit 78 is only the
 # wireless path.
 run_wpp() {
-	log "transport wpp — USB off"
+	log "transport wpp - USB off"
 	touch "$MD_LOG"
 	chown "${USER_NAME}:${USER_NAME}" "$MD_LOG" 2>/dev/null || true
 	"$GADGET" -usb-off >>"$MD_LOG" 2>&1 || true
@@ -88,7 +87,7 @@ run_wpp() {
 	# A crash exits immediately. Sleep here so the outer loop cannot
 	# respawn it in a tight cycle. A long run is a finished session.
 	if [ $((now - start)) -lt 20 ]; then
-		log "MD exited quickly — sleeping" | tee -a "$MD_LOG"
+		log "MD exited quickly - sleeping" | tee -a "$MD_LOG"
 		sleep 30
 	fi
 }
@@ -220,7 +219,7 @@ while true; do
 					export XDG_RUNTIME_DIR=/run/user/${UID_NUM}
 					export GLIBC_TUNABLES=glibc.rtld.optional_static_tls=65536
 					cd /usr/share/cargadgetd/bin
-					nohup '$MD' -listen '$LISTEN' >>'$MD_LOG' 2>&1 &
+					nohup '$MD' >>'$MD_LOG' 2>&1 &
 					echo \$!
 				")
 				log "MD pid ${md_pid:-unknown}" | tee -a "$MD_LOG"
@@ -243,7 +242,7 @@ while true; do
 					limit=8
 				fi
 				if [ "$md_miss" -ge "$limit" ]; then
-					log "MD not running — restoring USB"
+					log "MD not running - restoring USB"
 					kill "$gp" 2>/dev/null || true
 					break
 				fi

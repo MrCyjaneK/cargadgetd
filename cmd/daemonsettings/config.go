@@ -6,6 +6,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/cargadgetd/cargadgetd/internal/cfg"
+	"github.com/cargadgetd/cargadgetd/internal/rgh"
+	"github.com/cargadgetd/cargadgetd/internal/videoenc"
 	"gopkg.in/yaml.v3"
 )
 
@@ -40,6 +43,7 @@ type coreState struct {
 	player     string
 	gps        string
 	transport  string
+	firstRun   bool
 	peer       string
 	listen     string
 	control    string
@@ -68,9 +72,9 @@ func loadCore() coreState {
 		shellID: "basic", dropFrames: 20, audio: true, audioType: "auto", encoder: "droidmedia",
 		videoSize: "auto", frameMs: 33, live: true, videoIndex: -1, audioIndex: -1,
 		loopback: true, sink: "sink.null", gps: "geoclue",
-		transport: "usb",
-		listen:    "ffs:///dev/usb-ffs/aa", control: "tcp://127.0.0.1:9277",
-		certs:      "/usr/lib/cargadgetd/plugins/reversegearhead.so",
+		transport: "usb", firstRun: true,
+		listen: "ffs:///dev/usb-ffs/aa", control: "tcp://127.0.0.1:9277",
+		certs:      rgh.ConfigDefault,
 		gadgetPath: "/sys/kernel/config/usb_gadget/aa",
 		gadgetBin:  "/usr/share/cargadgetd/bin/cargadgetd-gadget",
 	}
@@ -128,10 +132,11 @@ func saveLoopback(on bool) error {
 }
 
 func saveEncoder(enc string) error {
-	if enc != "droidmedia" && enc != "software" {
-		return errString("encoder must be droidmedia or software")
+	id, ok := videoenc.Parse(enc)
+	if !ok {
+		return errString("encoder must be " + videoenc.IDs())
 	}
-	return patchSectionKey(userConfigPath(), "video", "encoder", strconv.Quote(enc))
+	return patchSectionKey(userConfigPath(), "video", "encoder", strconv.Quote(id))
 }
 
 func saveFrame(ms int) error {
@@ -148,6 +153,7 @@ func (e errString) Error() string { return string(e) }
 type coreFile struct {
 	Daemon *struct {
 		Transport *string `yaml:"transport"`
+		FirstRun  *bool   `yaml:"first_run"`
 		Peer      *string `yaml:"peer"`
 		Listen    *string `yaml:"listen"`
 		Control   *string `yaml:"control"`
@@ -206,7 +212,10 @@ func applyCore(path string, dst *coreState) {
 	}
 	if f.Daemon != nil {
 		if f.Daemon.Transport != nil {
-			dst.transport = transportMode(*f.Daemon.Transport)
+			dst.transport = cfg.NormalizeTransport(*f.Daemon.Transport)
+		}
+		if f.Daemon.FirstRun != nil {
+			dst.firstRun = *f.Daemon.FirstRun
 		}
 		if f.Daemon.Peer != nil {
 			dst.peer = canonMAC(*f.Daemon.Peer)
@@ -218,7 +227,7 @@ func applyCore(path string, dst *coreState) {
 			dst.control = strings.TrimSpace(*f.Daemon.Control)
 		}
 		if f.Daemon.Certs != nil && strings.TrimSpace(*f.Daemon.Certs) != "" {
-			dst.certs = strings.TrimSpace(*f.Daemon.Certs)
+			dst.certs = rgh.Canonical(strings.TrimSpace(*f.Daemon.Certs))
 		}
 	}
 	if f.Shell != nil {
@@ -349,129 +358,5 @@ func userConfigPath() string {
 }
 
 func patchSectionKey(path, section, key, val string) error {
-	if path == "" {
-		return os.ErrNotExist
-	}
-	b, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	text := ""
-	if err == nil {
-		text = strings.ReplaceAll(string(b), "\r\n", "\n")
-	}
-	if strings.TrimSpace(text) == "" {
-		return writeConfig(path, section+":\n  "+key+": "+val+"\n")
-	}
-	lines := strings.Split(text, "\n")
-	secAt := -1
-	for i, ln := range lines {
-		if topKey(ln) == section {
-			secAt = i
-			break
-		}
-	}
-	if secAt < 0 {
-		if len(lines) > 0 && lines[len(lines)-1] == "" {
-			lines = lines[:len(lines)-1]
-		}
-		lines = append(lines, section+":", "  "+key+": "+val, "")
-		return writeConfig(path, strings.Join(lines, "\n")+"\n")
-	}
-	end := len(lines)
-	found := -1
-	for i := secAt + 1; i < len(lines); i++ {
-		trim := strings.TrimSpace(lines[i])
-		if trim == "" || strings.HasPrefix(trim, "#") {
-			continue
-		}
-		if indentWidth(lines[i]) == 0 {
-			end = i
-			break
-		}
-		if childKey(trim) == key {
-			found = i
-		}
-	}
-	if found >= 0 {
-		pad := leadingWS(lines[found])
-		if pad == "" {
-			pad = "  "
-		}
-		lines[found] = pad + key + ": " + val
-	} else {
-		line := "  " + key + ": " + val
-		lines = append(lines[:end], append([]string{line}, lines[end:]...)...)
-	}
-	out := strings.Join(lines, "\n")
-	if !strings.HasSuffix(out, "\n") {
-		out += "\n"
-	}
-	return writeConfig(path, out)
-}
-
-func topKey(line string) string {
-	if indentWidth(line) != 0 {
-		return ""
-	}
-	return childKey(strings.TrimSpace(line))
-}
-
-func childKey(trim string) string {
-	if trim == "" || strings.HasPrefix(trim, "#") {
-		return ""
-	}
-	i := strings.IndexByte(trim, ':')
-	if i <= 0 {
-		return ""
-	}
-	return trim[:i]
-}
-
-func writeConfig(path, body string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".cargadgetd-*.yaml")
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
-	_, werr := tmp.Write([]byte(body))
-	cerr := tmp.Close()
-	if werr != nil || cerr != nil {
-		_ = os.Remove(name)
-		if werr != nil {
-			return werr
-		}
-		return cerr
-	}
-	if err := os.Chmod(name, 0o644); err != nil {
-		_ = os.Remove(name)
-		return err
-	}
-	return os.Rename(name, path)
-}
-
-func indentWidth(s string) int {
-	n := 0
-	for _, r := range s {
-		switch r {
-		case ' ':
-			n++
-		case '\t':
-			n += 2
-		default:
-			return n
-		}
-	}
-	return n
-}
-
-func leadingWS(s string) string {
-	i := 0
-	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
-		i++
-	}
-	return s[:i]
+	return cfg.PatchSectionKey(path, section, key, val)
 }

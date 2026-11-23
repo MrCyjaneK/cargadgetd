@@ -22,6 +22,8 @@ const char *cg_sym_name(struct cg_syms *s);
 const uint8_t *cg_sym_icon(struct cg_syms *s, int *w, int *h);
 void *cg_huinput_sym(void *h, const char *app, const char *event);
 void cg_call_huinput_fn(void *fn, int pressed);
+void *cg_nowplaying_sym(void *h, const char *app);
+int cg_call_nowplaying(void *fn, struct cargadgetd_nowplaying *out);
 void *cg_gps_fix_sym(void *h, const char *app);
 void *cg_gps_sat_sym(void *h, const char *app);
 void cg_call_gps_fix(void *fn, int has_pos, double lat, double lon, double acc_m,
@@ -94,6 +96,9 @@ type soRunner struct {
 
 	gpsLook          bool
 	gpsFixFn, gpsSat unsafe.Pointer
+
+	npLook bool
+	npFn   unsafe.Pointer
 }
 
 var (
@@ -184,6 +189,42 @@ func (r *soRunner) Stop() {
 
 func (r *soRunner) HuInput(name string, pressed int) {
 	r.callHuinput(name, pressed)
+}
+
+func (r *soRunner) NowPlaying() (NowPlaying, bool) {
+	fn := r.nowPlayingFn()
+	if fn == nil {
+		return NowPlaying{}, false
+	}
+	var out C.struct_cargadgetd_nowplaying
+	if C.cg_call_nowplaying(fn, &out) == 0 {
+		return NowPlaying{}, false
+	}
+	np := NowPlaying{
+		Title:    C.GoString(out.title),
+		Artist:   C.GoString(out.artist),
+		Album:    C.GoString(out.album),
+		App:      C.GoString(out.app),
+		State:    int(out.state),
+		Duration: int(out.duration_seconds),
+		Position: int(out.position_seconds),
+	}
+	if out.art_png != nil && out.art_len > 0 {
+		np.ArtPNG = C.GoBytes(unsafe.Pointer(out.art_png), out.art_len)
+	}
+	return np, true
+}
+
+func (r *soRunner) nowPlayingFn() unsafe.Pointer {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.npLook {
+		r.npLook = true
+		capp := C.CString(r.id)
+		r.npFn = C.cg_nowplaying_sym(r.lib, capp)
+		C.free(unsafe.Pointer(capp))
+	}
+	return r.npFn
 }
 
 func (r *soRunner) GPSFix(hasPos int, lat, lon, accM float64, hasSpeed, kmh, hasCourse int, course float64, errMsg string) {

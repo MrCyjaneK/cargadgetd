@@ -113,12 +113,20 @@ type App struct {
 	pushed   bool
 }
 
+type NowPlaying struct {
+	Title, Artist, Album, App string
+	State                     int
+	Duration, Position        int
+	ArtPNG                    []byte
+}
+
 // Runner is a .so app. Draw, touch, pause, and resume are invoked by the
 // shell plugin on the shell draw goroutine, not by the host.
 type Runner interface {
 	Start(play func(pcm []int16, nframes, ch, rate int))
 	Stop()
 	HuInput(name string, pressed int)
+	NowPlaying() (NowPlaying, bool)
 	GPSFix(hasPos int, lat, lon, accM float64, hasSpeed, kmh, hasCourse int, course float64, err string)
 	GPSSat(gain int, kicker, title, sub, detail, flag string)
 	AppPtrs() (draw, touch, pause, resume unsafe.Pointer)
@@ -431,21 +439,38 @@ func (s *Shell) Touch(x, y uint32, action int) {
 	}
 }
 
-// HuInput queues a named HU key. Draw delivers it to every inited app.
-// The shell plugin receives it on the draw goroutine.
+// HuInput delivers a named HU key to every inited app now, and kicks the
+// shell draw so the shell plugin sees it without waiting for the next
+// video frame. A stalled encoder used to leave the key in pendingKeys.
 func (s *Shell) HuInput(name string, pressed int) {
 	if name == "" {
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
 		return
 	}
-	s.pendingKeys = append(s.pendingKeys, keyEv{name: name, pressed: pressed})
-	if len(s.pendingKeys) > 64 {
-		s.pendingKeys = s.pendingKeys[len(s.pendingKeys)-64:]
+	k := keyEv{name: name, pressed: pressed}
+	s.broadcastKey(k)
+	s.enqueueShellKeys([]keyEv{k})
+	s.kickDraw()
+}
+
+func (s *Shell) NowPlaying() (NowPlaying, bool) {
+	s.mu.Lock()
+	apps := append([]*App(nil), s.apps...)
+	s.mu.Unlock()
+	for _, a := range apps {
+		if a == nil || !a.inited || a.runner == nil {
+			continue
+		}
+		if np, ok := a.runner.NowPlaying(); ok {
+			return np, true
+		}
 	}
+	return NowPlaying{}, false
 }
 
 func (s *Shell) showNote(title, body string, icon *image.RGBA) {

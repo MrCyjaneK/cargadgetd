@@ -5,6 +5,10 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/cargadgetd/cargadgetd/internal/cfg"
+	"github.com/cargadgetd/cargadgetd/internal/rgh"
+	"github.com/cargadgetd/cargadgetd/internal/videoenc"
 )
 
 const (
@@ -31,12 +35,15 @@ var coreSpecs = []coreSpec{
 	{label: "Shell drop frames", kind: settingInt, get: func(s coreState) string { return strconv.Itoa(s.dropFrames) }, set: saveInt(0, 1000, "shell", "drop_frames")},
 	{label: "Audio enabled", kind: settingBool, get: boolBit(func(s coreState) bool { return s.audio }), set: saveBit(saveAudio)},
 	{label: "Force audio primes", kind: settingBool, get: boolBit(func(s coreState) bool { return s.forcePrime }), set: saveBit(saveForcePrime)},
-	{label: "Audio type", kind: settingEnum, enums: "auto,media,system,speech", get: func(s coreState) string { return s.audioType }, set: saveAudioType},
+	{label: "Audio type", kind: settingEnum, enums: "auto,media,system,guidance,telephony", get: func(s coreState) string { return s.audioType }, set: saveAudioType},
 	{label: "Audio channels", kind: settingEnum, enums: "auto,mono,stereo", get: func(s coreState) string { return channelLabel(s.channels) }, set: saveChannels},
 	{label: "Audio tick ms", kind: settingInt, get: func(s coreState) string { return strconv.Itoa(s.tickMs) }, set: saveInt(0, 1000, "audio", "tick_ms")},
 	{label: "Audio config index", kind: settingInt, get: func(s coreState) string { return strconv.Itoa(s.audioIndex) }, set: saveInt(-1, 32, "audio", "config_index")},
-	{label: "Video encoder", kind: settingEnum, enums: "droidmedia,software", get: func(s coreState) string { return s.encoder }, set: saveEncoder},
-	{label: "Video size", kind: settingEnum, enums: "auto,800x480,1280x720,1920x1080", get: func(s coreState) string { return s.videoSize }, set: saveVideoSize},
+	{label: "Video encoder", kind: settingEnum, enumsFn: func() string { return videoenc.Titles() }, accept: func(v string) bool {
+		_, ok := videoenc.Parse(v)
+		return ok
+	}, get: func(s coreState) string { return videoenc.Title(s.encoder) }, set: saveEncoder},
+	{label: "Video size", kind: settingEnum, enums: "auto,800x480,1280x720,1920x1080,2560x1440,3840x2160", get: func(s coreState) string { return s.videoSize }, set: saveVideoSize},
 	{label: "Frame ms", kind: settingInt, get: func(s coreState) string { return strconv.Itoa(s.frameMs) }, set: func(v string) error {
 		n, err := strconv.Atoi(strings.TrimSpace(v))
 		if err != nil {
@@ -55,14 +62,20 @@ var coreSpecs = []coreSpec{
 	{label: "Music sink", kind: settingString, get: func(s coreState) string { return s.sink }, set: saveSink},
 	{label: "Music player", kind: settingString, get: func(s coreState) string { return s.player }, set: saveQuoted("music", "player")},
 	{label: "GPS", kind: settingEnum, enums: "GeoClue,Mock", get: func(s coreState) string { return gpsLabel(s.gps) }, set: saveGPS},
-	{label: "Transport", kind: settingEnum, enums: "usb,wireless,wpp", get: func(s coreState) string { return s.transport }, set: saveTransport},
+	{label: "Transport", kind: settingEnum, enumsFn: func() string { return cfg.TransportTitles() }, accept: func(v string) bool {
+		_, ok := cfg.ParseTransport(v)
+		return ok
+	}, get: func(s coreState) string { return cfg.TransportTitle(s.transport) }, set: saveTransport},
 	{label: "Head unit", kind: settingEnum, enumsFn: peerEnums, accept: peerChoice, get: func(s coreState) string { return peerChoiceLabel(s.peer) }, set: savePeer},
 	{label: "Listen", kind: settingString, get: func(s coreState) string { return s.listen }, set: saveListen},
 	{label: "Control", kind: settingString, get: func(s coreState) string { return s.control }, set: saveControl},
 	{label: "Certs", kind: settingString, get: func(s coreState) string { return s.certs }, set: saveCerts},
 	{label: "Gadget path", kind: settingString, get: func(s coreState) string { return s.gadgetPath }, set: saveGadgetPath},
 	{label: "Gadget bin", kind: settingString, get: func(s coreState) string { return s.gadgetBin }, set: saveQuoted("gadget", "bin")},
+	{label: "First run", kind: settingBool, get: boolBit(func(s coreState) bool { return s.firstRun }), set: saveBit(saveFirstRun)},
 }
+
+func saveFirstRun(on bool) error { return patchBool("daemon", "first_run", on) }
 
 func boolBit(get func(coreState) bool) func(coreState) string {
 	return func(s coreState) string {
@@ -109,10 +122,10 @@ func saveQuoted(section, key string) func(string) error {
 
 func saveAudioType(v string) error {
 	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "media", "system", "speech", "auto":
+	case "media", "system", "guidance", "telephony", "auto":
 		return patchSectionKey(userConfigPath(), "audio", "type", strconv.Quote(strings.ToLower(strings.TrimSpace(v))))
 	default:
-		return errString("audio type must be auto, media, system, or speech")
+		return errString("audio type must be auto, media, system, guidance, or telephony")
 	}
 }
 
@@ -145,7 +158,7 @@ func saveChannels(v string) error {
 func saveVideoSize(v string) error {
 	v = strings.ToLower(strings.TrimSpace(v))
 	switch v {
-	case "auto", "800x480", "1280x720", "1920x1080":
+	case "auto", "800x480", "1280x720", "1920x1080", "2560x1440", "3840x2160":
 		return patchSectionKey(userConfigPath(), "video", "size", strconv.Quote(v))
 	default:
 		return errString("video size must be auto or WxH")
@@ -155,19 +168,11 @@ func saveVideoSize(v string) error {
 // packagedGadget is the setuid helper that can restore g1 and start usb-moded.
 const packagedGadget = "/usr/share/cargadgetd/bin/cargadgetd-gadget"
 
-func transportMode(v string) string {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "wireless":
-		return "wireless"
-	case "wpp":
-		return "wpp"
-	default:
-		return "usb"
-	}
-}
-
 func saveTransport(v string) error {
-	mode := transportMode(v)
+	mode, ok := cfg.ParseTransport(v)
+	if !ok {
+		return errString("unknown transport")
+	}
 	if err := patchSectionKey(userConfigPath(), "daemon", "transport", strconv.Quote(mode)); err != nil {
 		return err
 	}
@@ -175,14 +180,14 @@ func saveTransport(v string) error {
 		return nil
 	}
 	switch mode {
-	case "wireless":
+	case cfg.TransportWireless:
 		// Stop the AOA waiter before restoring the gadget. Leaving it up
 		// would poll the config and keep the CPU out of deep idle.
 		if err := runGadget("-aoa-service", "stop"); err != nil {
 			return err
 		}
 		return runGadget("-usb-off")
-	case "wpp":
+	case cfg.TransportWPP:
 		// The accessory gadget stays down. Restarting the unit is what
 		// brings Bluetooth up and starts the dialer.
 		if err := runGadget("-usb-off"); err != nil {
@@ -223,11 +228,7 @@ func saveControl(v string) error {
 }
 
 func saveCerts(v string) error {
-	v = strings.TrimSpace(v)
-	if v == "" || strings.EqualFold(v, "embedded") || strings.EqualFold(v, "reversegearhead") {
-		v = "/usr/lib/cargadgetd/plugins/reversegearhead.so"
-	}
-	return patchSectionKey(userConfigPath(), "daemon", "certs", strconv.Quote(v))
+	return patchSectionKey(userConfigPath(), "daemon", "certs", strconv.Quote(rgh.Canonical(v)))
 }
 
 func saveGadgetPath(v string) error {
@@ -353,7 +354,7 @@ func coreSettingsSetEnum(i int, v string) int {
 		if !s.accept(v) {
 			return coreFail("unknown value")
 		}
-	} else if !enumHas(s.enums, v) {
+	} else if !enumHas(coreSettingsEnums(i), v) {
 		return coreFail("unknown value")
 	}
 	if err := s.set(v); err != nil {

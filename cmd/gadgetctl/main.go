@@ -8,7 +8,7 @@
 //	./gadgetctl                 # root / setuid (RPM: cargadgetd-gadget)
 //	./gadgetctl -stop           # tear down a running agent
 //	# other terminal, as defaultuser:
-//	./cargadgetd -listen ffs:///dev/usb-ffs/aa
+//	./cargadgetd-md   # daemon.listen is ffs:///dev/usb-ffs/aa
 package main
 
 import (
@@ -127,7 +127,7 @@ func main() {
 	}
 
 	// Resolve FFS owner from the invoking user *before* we become full root.
-	// Setuid leaves ruid=caller — util-linux mount/systemctl refuse ruid!=0.
+	// Setuid leaves ruid=caller - util-linux mount/systemctl refuse ruid!=0.
 	uid, gid, uname := resolveAllowUser(*allowUser)
 	if err := becomeRoot(); err != nil {
 		log.Fatalf("become root: %v", err)
@@ -285,7 +285,7 @@ func main() {
 		}
 	}
 
-	// Let cargadgetd (non-root) bounce the UDC on session death — a real USB
+	// Let cargadgetd (non-root) bounce the UDC on session death - a real USB
 	// disconnect is the only way to tell the HU the AA session is gone.
 	// JollaPhone2026's g1 is 0770 root:system, so chown of the UDC file alone
 	// still returns EACCES (the MD cannot traverse the directory).
@@ -305,11 +305,11 @@ func main() {
 		fmt.Println(" ", e.Name())
 	}
 	fmt.Println()
-	fmt.Println("gadget held — run as normal user:")
-	fmt.Printf("  cargadgetd-md -listen ffs://%s\n", *ffsDir)
+	fmt.Println("gadget held - run as normal user:")
+	fmt.Printf("  cargadgetd-md  (daemon.listen ffs://%s)\n", *ffsDir)
 	fmt.Println("Ctrl-C here to unbind and restore usb-moded")
 
-	// Hold ep0 open so FunctionFS stays alive — but do NOT read events here.
+	// Hold ep0 open so FunctionFS stays alive - but do NOT read events here.
 	// cargadgetd is the single ep0 event reader; two readers race and each
 	// misses ~half the events (DISABLE/SUSPEND went unseen → writes into a
 	// reset FIFO → truncated TLS record → DHU BAD_DECRYPT).
@@ -328,7 +328,7 @@ func waitSignal() {
 	select {
 	case <-sig:
 	case <-unplug:
-		fmt.Println("USB cable disconnected — tearing down gadget")
+		fmt.Println("USB cable disconnected - tearing down gadget")
 	}
 }
 
@@ -530,7 +530,7 @@ func exposeGadgetTraverse(gadget string) {
 
 func exposeFFS(ffsDir string, uid, gid int) error {
 	_ = os.Chmod(ffsDir, 0755)
-	// Sailfish (esp. Xperia) mounts /dev/usb-ffs as 0770 shell:shell — defaultuser
+	// Sailfish (esp. Xperia) mounts /dev/usb-ffs as 0770 shell:shell - defaultuser
 	// is not in that group, so they cannot traverse to aa/ep* even after chown.
 	// Walk parents up to /dev and open execute bit for others.
 	for p := filepath.Dir(ffsDir); p != "/" && p != "." && p != ""; p = filepath.Dir(p) {

@@ -2,7 +2,7 @@
 
 Name:           cargadgetd
 Version:        0.1
-Release:        5
+Release:        7
 Summary:        Android Auto phone stack and Sailfish control UI
 Group:          Applications/System
 License:        GPLv3
@@ -20,6 +20,7 @@ BuildRequires:  pkgconfig(qdeclarative5-boostable)
 BuildRequires:  desktop-file-utils
 Requires:       mapplauncherd-booster-silica-qt5
 Requires:       sailfishsilica-qt5
+Obsoletes:      reversegearhead
 
 %description
 Cargadgetd control UI
@@ -51,6 +52,8 @@ CGO_ENABLED=0 go build -buildvcs=false -ldflags "-s -w" \
     -o _out/bin/cargadgetd-gadget ./cmd/gadgetctl
 go build -buildvcs=false -buildmode=c-shared -ldflags "-s -w" \
     -o _out/libcargadgetd_app_daemon.so ./cmd/daemonsettings
+go build -buildvcs=false -buildmode=c-shared -ldflags "-s -w" \
+    -o _out/libcargadgetdcontrol.so ./cmd/control
 
 %install
 set -eu
@@ -69,6 +72,7 @@ install -m 755 _out/bin/cargadgetd-gadget %{buildroot}%{_datadir}/%{name}/bin/ca
 
 install -d %{buildroot}/usr/lib/cargadgetd/plugins
 install -m 755 _out/libcargadgetd_app_daemon.so %{buildroot}/usr/lib/cargadgetd/plugins/libcargadgetd_app_daemon.so
+install -m 755 _out/libcargadgetdcontrol.so %{buildroot}/usr/lib/cargadgetd/libcargadgetdcontrol.so
 
 desktop-file-install --delete-original \
     --dir %{buildroot}%{_datadir}/applications \
@@ -120,4 +124,5 @@ fi
 %attr(755,root,root) %{_datadir}/%{name}/music-loopback-restore.sh
 %dir /usr/lib/cargadgetd
 %dir /usr/lib/cargadgetd/plugins
+/usr/lib/cargadgetd/libcargadgetdcontrol.so
 /usr/lib/cargadgetd/plugins/libcargadgetd_app_daemon.so

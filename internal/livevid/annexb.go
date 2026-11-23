@@ -161,7 +161,7 @@ func hasNALType(annexB []byte, want byte) bool {
 
 // parameterSetsOnly reports SPS/PPS (and AUD/SEI/filler) with no VCL slice.
 // Spreadtrum droidmedia emits this as the first encoder buffer without
-// BUFFER_FLAG_CODEC_CONFIG — sending it as video AU #1 makes Subaru drop.
+// BUFFER_FLAG_CODEC_CONFIG - sending it as video AU #1 makes Subaru drop.
 func parameterSetsOnly(in []byte) bool {
 	if len(in) == 0 {
 		return false

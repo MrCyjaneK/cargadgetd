@@ -63,6 +63,24 @@ func TestVideoFocusProjectedNoInputKeepsStreaming(t *testing.T) {
 	}
 }
 
+func TestAllowVideoSendsStart(t *testing.T) {
+	m := NewMD(nil, nil, log.New(io.Discard, "", 0))
+	m.AllowVideo()
+	if !m.VideoStreaming() {
+		t.Fatal("timeout start should mark video streaming")
+	}
+	select {
+	case <-m.WaitVideoStarted():
+	default:
+		t.Fatal("StartInd should release the video loop")
+	}
+	recvStartInd(t, m)
+	m.AllowVideo()
+	if msg, ok := tryRecv(m); ok {
+		t.Fatalf("second AllowVideo enqueued %x", msg.payload)
+	}
+}
+
 func TestVideoFocus4StartsWhenIdle(t *testing.T) {
 	m := NewMD(nil, nil, log.New(io.Discard, "", 0))
 	if err := m.onVideoFocus(ChanVideo, []byte{0x08, 0x04, 0x10, 0x01}); err != nil {

@@ -77,7 +77,7 @@ func (s *Shell) watchNotes(stop <-chan struct{}) {
 		title := displayTitle(*pick)
 		body := strings.TrimSpace(pick.Body)
 		icon := loadNotifyIcon(pick.Icon)
-		log.Printf("notify: %s — %s", title, body)
+		log.Printf("notify: %s - %s", title, body)
 		s.showNote(title, body, icon)
 	}
 }

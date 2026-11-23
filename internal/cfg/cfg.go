@@ -32,35 +32,16 @@ const (
 	TransportWPP = "wpp"
 )
 
-// NormalizeTransport returns wireless or wpp for those modes. Anything else,
-// including a typo, stays usb so a bad key cannot drop the cable path.
-func NormalizeTransport(v string) string {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case TransportWireless:
-		return TransportWireless
-	case TransportWPP:
-		return TransportWPP
-	default:
-		return TransportUSB
-	}
-}
-
 type Daemon struct {
-	// Transport is usb, wireless, or wpp. Unknown values are usb.
 	Transport string
-	// Peer is the head-unit Bluetooth MAC for transport wpp. The passphrase
-	// arrives in the wireless setup exchange and is not config.
-	Peer string
-	// Listen is tcp://, unix://, or ffs:///. Device USB launchers pass -listen.
-	Listen string
-	// Control is the JSON control plane.
-	Control string
-	// Certs is reversegearhead.so (GAL MD PEMs). "embedded" still maps to the default plugin.
-	Certs string
+	Peer      string
+	Listen    string
+	Control   string
+	Certs     string
 }
 
 type Video struct {
-	// Encoder is "droidmedia" (Sailfish HAL) or "software" (x264).
+	// Encoder is a videoenc id: "droidmedia", "droidmedia-alt", "software", or "software-fast".
 	Encoder string
 	// Size is "auto" to follow the HU, or WxH like "800x480".
 	Size string
@@ -81,7 +62,7 @@ type Audio struct {
 	Channels int
 	// ConfigIndex selects audio_configs[]; -1 means auto (prefer 48kHz stereo).
 	ConfigIndex int
-	// Type is auto|media|system|speech.
+	// Type is auto|media|system|guidance|telephony (GAL AudioStreamType).
 	Type string
 }
 
@@ -138,9 +119,9 @@ func Default() *Config {
 	return &Config{
 		Daemon: Daemon{
 			Transport: TransportUSB,
-			Listen:    "tcp://127.0.0.1:5277",
+			Listen:    "ffs:///dev/usb-ffs/aa",
 			Control:   "tcp://127.0.0.1:9277",
-			Certs:     "/usr/lib/cargadgetd/plugins/reversegearhead.so",
+			Certs:     "~/.local/share/cargadgetd/certs",
 		},
 		Video: Video{
 			Encoder:     "droidmedia",

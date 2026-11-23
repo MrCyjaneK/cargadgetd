@@ -22,7 +22,7 @@ func (n SatNote) Flash() string {
 		return "UPDATE " + n.Title
 	}
 	net := n.Sub
-	for _, sep := range []string{" · ", " / "} {
+	for _, sep := range []string{" - ", " · ", " / "} {
 		if i := strings.Index(net, sep); i >= 0 {
 			net = net[:i]
 			break

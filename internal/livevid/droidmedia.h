@@ -66,6 +66,36 @@ typedef struct {
 	} codec_specific;
 } DroidMediaCodecEncoderMetaData;
 
+/* droidmedia 0.20260819 appended stride and slice_height to the parent.
+   That shifts every field the encoder reads. Hardware (alternative) fills
+   this layout. The struct above is the older HAL and stays as it was. */
+typedef struct {
+	const char *type;
+	int32_t width;
+	int32_t height;
+	int32_t fps;
+	int32_t channels;
+	int32_t sample_rate;
+	int32_t hal_format;
+	DroidMediaCodecFlags flags;
+	int32_t stride;
+	int32_t slice_height;
+} DroidMediaCodecMetaDataAlt;
+
+typedef struct {
+	DroidMediaCodecMetaDataAlt parent;
+	int32_t color_format;
+	int32_t bitrate;
+	int32_t meta_data;
+	int32_t stride;
+	int32_t slice_height;
+	int32_t max_input_size;
+	int32_t bitrate_mode;
+	union {
+		DroidMediaCodecEncoderH264Settings h264;
+	} codec_specific;
+} DroidMediaCodecEncoderMetaDataAlt;
+
 typedef struct {
 	DroidMediaData data;
 	int64_t ts;

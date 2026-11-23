@@ -3,8 +3,6 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"flag"
-	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
@@ -19,12 +17,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/cargadgetd/cargadgetd/internal/aaextract"
 	"github.com/cargadgetd/cargadgetd/internal/cfg"
 	"github.com/cargadgetd/cargadgetd/internal/control"
 	"github.com/cargadgetd/cargadgetd/internal/ffs"
 	"github.com/cargadgetd/cargadgetd/internal/livevid"
 	"github.com/cargadgetd/cargadgetd/internal/loopback"
-	"github.com/cargadgetd/cargadgetd/internal/rgh"
 	"github.com/cargadgetd/cargadgetd/internal/session"
 	"github.com/cargadgetd/cargadgetd/internal/shell"
 	aassl "github.com/cargadgetd/cargadgetd/internal/ssl"
@@ -39,43 +37,21 @@ var (
 )
 
 func main() {
-	listenFlag := flag.String("listen", "", "MD listen (tcp://, unix://, or ffs:///; default: daemon.listen)")
-	controlFlag := flag.String("control", "", "JSON control listen (default: daemon.control)")
-	certDirFlag := flag.String("certs", "", "reversegearhead.so path (default: daemon.certs)")
-	configPath := flag.String("config", "", "YAML config file (default: search path after compiled defaults)")
-	autoAV := flag.Bool("auto-av", true, "open AV channels and stream livevid after SDR")
-	showVersion := flag.Bool("version", false, "print version and exit")
-	certInfo := flag.Bool("cert-info", false, "print reversegearhead_probe and exit")
-	flag.Parse()
-
-	if *showVersion {
-		log.Printf("cargadgetd %s (%s)", version, commit)
-		return
-	}
-	if err := cfg.Load(*configPath); err != nil {
+	if err := cfg.Load(""); err != nil {
 		log.Fatalf("config: %v", err)
 	}
 	conf0 := cfg.Get()
-	listen := effectiveListen(pick(*listenFlag, conf0.Daemon.Listen), conf0.Daemon.Listen, conf0.Daemon.Transport)
-	controlAddr := pick(*controlFlag, conf0.Daemon.Control)
-	certDir := pick(*certDirFlag, conf0.Daemon.Certs)
+	listen := effectiveListen(conf0.Daemon.Listen, conf0.Daemon.Transport)
+	controlAddr := conf0.Daemon.Control
+	certDir := conf0.Daemon.Certs
 	log.Printf("cargadgetd %s (%s) config=%s transport=%s listen=%s", version, commit, cfg.LoadedFrom(), conf0.Daemon.Transport, listen)
 
-	mat, err := rgh.Open(certDir)
+	mat, err := aaextract.Open(certDir)
 	if err != nil {
 		log.Fatalf("certs: %v", err)
 	}
-	log.Printf("using reversegearhead MD certs from %s (%d + %d bytes) expires_in=%ds",
+	log.Printf("using MD certs from %s (%d + %d bytes) expires_in=%ds",
 		mat.Path, len(mat.Cert), len(mat.Key), mat.ExpiresIn)
-	if *certInfo {
-		if mat.Probe != "" {
-			fmt.Print(mat.Probe)
-			if !strings.HasSuffix(mat.Probe, "\n") {
-				fmt.Println()
-			}
-		}
-		return
-	}
 
 	ctl := control.New()
 	var mdMu = struct {
@@ -109,6 +85,7 @@ func main() {
 				return control.Response{OK: false, Error: err.Error()}
 			}
 		}
+		mdMu.md.OpenSide()
 		return control.Response{OK: true}
 	})
 
@@ -120,6 +97,9 @@ func main() {
 
 	serve := func(rw io.ReadWriteCloser, peer string) {
 		defer rw.Close()
+		if c, ok := rw.(net.Conn); ok {
+			armProjectionTCP(c)
+		}
 		log.Printf("HU connected from %s", peer)
 		if strings.HasPrefix(listen, "ffs://") {
 			on, src, raw := usbcable.Probe()
@@ -135,7 +115,7 @@ func main() {
 		md.SetUSBBulk(strings.HasPrefix(listen, "ffs://"))
 		mdMu.md = md
 		defer func() { mdMu.md = nil }()
-		runSession(md, *autoAV, strings.HasPrefix(listen, "ffs://"))
+		runSession(md, strings.HasPrefix(listen, "ffs://"))
 	}
 
 	if conf0.Daemon.Transport == cfg.TransportWPP {
@@ -156,7 +136,7 @@ func main() {
 		}()
 		exitUnplug := func() {
 			_, src, raw := usbcable.Probe()
-			log.Printf("USB cable disconnected — exiting (src=%s raw=%q)", src, raw)
+			log.Printf("USB cable disconnected - exiting (src=%s raw=%q)", src, raw)
 			stopGadgetAgent()
 		}
 		// Sessions die on bus events (DISABLE/SUSPEND) or HU exit. Reopen the
@@ -184,7 +164,7 @@ func main() {
 			go func() {
 				select {
 				case ferr := <-eps.Fatal():
-					log.Printf("ffs fatal: %v — closing endpoints", ferr)
+					log.Printf("ffs fatal: %v - closing endpoints", ferr)
 					_ = eps.Close()
 				case <-unplug:
 					_ = eps.Close()
@@ -203,13 +183,13 @@ func main() {
 				return
 			default:
 			}
-			// A single VBUS=0 sample is not unplug — AOA mode-switch and
+			// A single VBUS=0 sample is not unplug - AOA mode-switch and
 			// Subaru leaving AA (HU home) both dip online while the cable
 			// is still in. Exiting here tore the gadget down so the next
 			// Android Auto tap did nothing. WaitDisconnect's 3s debounce
 			// is the unplug signal (the <-unplug case above).
 			if !on {
-				log.Printf("VBUS off after session (hu_bytes=%v) — not unplug yet, reopening (src=%s raw=%q)", wasActive, src, raw)
+				log.Printf("VBUS off after session (hu_bytes=%v) - not unplug yet, reopening (src=%s raw=%q)", wasActive, src, raw)
 			}
 			// The host does not drop VBUS when Desktop Head Unit exits, so
 			// WaitDisconnect never fires and 18d1:2d00 stays enumerated.
@@ -218,11 +198,11 @@ func main() {
 			// Reopening FunctionFS on the same accessory left DHU pinging
 			// a dead TLS session.
 			if wasActive {
-				log.Printf("session ended after HU traffic — restoring USB gadget (src=%s raw=%q)", src, raw)
+				log.Printf("session ended after HU traffic - restoring USB gadget (src=%s raw=%q)", src, raw)
 				stopGadgetAgent()
 				return
 			}
-			log.Printf("session ended — reopening FunctionFS for next HU connect")
+			log.Printf("session ended - reopening FunctionFS for next HU connect")
 			time.Sleep(time.Second)
 		}
 	}
@@ -244,7 +224,7 @@ func main() {
 	}
 }
 
-func runSession(md *session.MD, autoAV, usbPace bool) {
+func runSession(md *session.MD, usbPace bool) {
 	errCh := make(chan error, 1)
 	go func() { errCh <- md.Run() }()
 
@@ -259,10 +239,6 @@ func runSession(md *session.MD, autoAV, usbPace bool) {
 		inW, inH := md.TouchSize()
 		log.Printf("session ready (SDR received) video=%d audio=%d input=%d sensor=%d size=%dx%d ui=%dx%d pad=%d,%d touch=%dx%d",
 			md.VideoCh, md.AudioCh, md.InputCh, md.SensorCh, vw, vh, cw, ch, ox, oy, inW, inH)
-		if !autoAV {
-			log.Printf("session: %v", <-errCh)
-			return
-		}
 		if err := md.OpenVideo(); err != nil {
 			log.Printf("open video: %v", err)
 		}
@@ -274,11 +250,12 @@ func runSession(md *session.MD, autoAV, usbPace bool) {
 				log.Printf("open sensor: %v", err)
 			}
 		}
+		md.OpenSide()
 		select {
 		case <-md.WaitVideoStarted():
 			log.Printf("video started")
 		case <-time.After(8 * time.Second):
-			log.Printf("video start timeout — allowing video stream without focus")
+			log.Printf("video start timeout - allowing video stream without focus")
 			md.AllowVideo()
 		case err := <-errCh:
 			log.Printf("session ended before video start: %v", err)
@@ -432,28 +409,38 @@ func runSession(md *session.MD, autoAV, usbPace bool) {
 				}
 			}
 		}()
+		publishNowPlaying(md, ui)
 		go func() {
 			var touchN uint64
 			for ev := range md.Events {
+				if ev.Type == "huinput" {
+					name := string(ev.Payload)
+					log.Printf("huinput %s pressed=1 cluster", name)
+					ui.HuInput(name, 1)
+					ui.HuInput(name, 0)
+					continue
+				}
 				if ev.Type != "touch" {
 					continue
 				}
-				t, ok := session.ParseTouch(ev.Payload)
-				if ok {
-					act, ok := shell.MapTouch(t.Action)
-					if !ok {
-						touchN++
-						if touchN <= 8 {
-							log.Printf("touch unmapped action=%d xy=%d,%d body=%x", t.Action, t.X, t.Y, ev.Payload)
+				if ev.Channel == md.InputCh {
+					t, ok := session.ParseTouch(ev.Payload)
+					if ok {
+						act, ok := shell.MapTouch(t.Action)
+						if !ok {
+							touchN++
+							if touchN <= 8 {
+								log.Printf("touch unmapped action=%d xy=%d,%d body=%x", t.Action, t.X, t.Y, ev.Payload)
+							}
+						} else {
+							x, y := session.MapTouch(int(t.X), int(t.Y), ox, oy, cw, ch, vw, vh, inW, inH)
+							touchN++
+							if touchN <= 8 || touchN%50 == 0 {
+								log.Printf("touch #%d aa=%d,%d action=%d → ui=%d,%d act=%d (in=%dx%d codec=%dx%d)",
+									touchN, t.X, t.Y, t.Action, x, y, act, inW, inH, vw, vh)
+							}
+							ui.Touch(uint32(x), uint32(y), act)
 						}
-					} else {
-						x, y := session.MapTouch(int(t.X), int(t.Y), ox, oy, cw, ch, vw, vh, inW, inH)
-						touchN++
-						if touchN <= 8 || touchN%50 == 0 {
-							log.Printf("touch #%d aa=%d,%d action=%d → ui=%d,%d act=%d (in=%dx%d codec=%dx%d)",
-								touchN, t.X, t.Y, t.Action, x, y, act, inW, inH, vw, vh)
-						}
-						ui.Touch(uint32(x), uint32(y), act)
 					}
 				}
 				for _, b := range session.ParseButtons(ev.Payload) {
@@ -509,8 +496,7 @@ func runSession(md *session.MD, autoAV, usbPace bool) {
 			log.Printf("session: %v", <-errCh)
 			return
 		}
-		// JP2026 Codec2 create segfaults if a plugin dlopen is still in
-		// progress (music / reversegearhead). Handshake is already done;
+		// JP2026 Codec2 create segfaults if a plugin dlopen is still in progress.
 		// the first frame waits until every .so has finished init.
 		if !ui.WaitLoad(2 * time.Minute) {
 			log.Printf("shell: plugin load timed out; opening encoder anyway")
@@ -535,7 +521,7 @@ func runSession(md *session.MD, autoAV, usbPace bool) {
 			n := pcmCoolN.Add(1)
 			pcmCoolUntil.Store(time.Now().Add(2 * time.Second).UnixNano())
 			if n <= 5 || n%25 == 0 {
-				log.Printf("audio ack slow — cool-and-retry (n=%d)", n)
+				log.Printf("audio ack slow - cool-and-retry (n=%d)", n)
 			}
 		}
 		// USB: independent PCM ticker (Pixel-like). TCP: PCM glued to video loop below.
@@ -574,7 +560,7 @@ func runSession(md *session.MD, autoAV, usbPace bool) {
 			if usbPace && !md.VideoStreaming() {
 				if streaming {
 					streaming = false
-					log.Printf("video paused (MediaStop/focus loss) — waiting for StartInd")
+					log.Printf("video paused (MediaStop/focus loss) - waiting for StartInd")
 				}
 				time.Sleep(50 * time.Millisecond)
 				nextFrame = time.Now()
@@ -584,7 +570,7 @@ func runSession(md *session.MD, autoAV, usbPace bool) {
 				streaming = true
 				live.ForceIDR()
 				nextFrame = time.Now()
-				log.Printf("video resume — IDR after HU StartInd/focus")
+				log.Printf("video resume - IDR after HU StartInd/focus")
 			}
 			now := time.Now()
 			if now.Before(nextFrame) {
@@ -603,7 +589,7 @@ func runSession(md *session.MD, autoAV, usbPace bool) {
 			videoTS.Store(ts)
 			if usbPace {
 				// One try per tick. If the previous AU is still unacked, drop
-				// this frame and encode a current one on the next credit —
+				// this frame and encode a current one on the next credit -
 				// do not spin until MediaAck (that froze gears/Link on Subaru).
 				wait := framePeriod
 				if time.Now().After(nextFrame) {
@@ -621,8 +607,8 @@ func runSession(md *session.MD, autoAV, usbPace bool) {
 						}
 						bypassN++
 						if bypassN <= 5 || bypassN%50 == 0 {
-							log.Printf("video drop: waiting MediaAck (dropped=%d last_ack_age=%v)",
-								bypassN, md.LastVideoAckAge().Round(time.Millisecond))
+							log.Printf("video drop: waiting MediaAck (dropped=%d last_ack_age=%s)",
+								bypassN, md.LastVideoAckAgeLabel())
 						}
 						nextFrame = nextFrame.Add(framePeriod)
 						continue
@@ -636,11 +622,13 @@ func runSession(md *session.MD, autoAV, usbPace bool) {
 				}
 			}
 			au, err := live.Encode(now)
-			if err != nil {
+			if err != nil || len(au) == 0 {
 				if usbPace {
 					md.ReleaseVideoCredit()
 				}
-				log.Printf("live encode: %v", err)
+				if err != nil {
+					log.Printf("live encode: %v", err)
+				}
 				nextFrame = nextFrame.Add(framePeriod)
 				continue
 			}
@@ -710,7 +698,7 @@ func bounceUDC() {
 	}
 	name := strings.TrimSpace(string(cur))
 	if name == "" {
-		// Already unbound (e.g. cable pulled) — rebind to the first UDC.
+		// Already unbound (e.g. cable pulled) - rebind to the first UDC.
 		ents, _ := os.ReadDir("/sys/class/udc")
 		if len(ents) == 0 {
 			log.Printf("udc bounce skipped: gadget unbound and no UDC present")
@@ -728,7 +716,7 @@ func bounceUDC() {
 		log.Printf("udc rebind failed: %v", err)
 		return
 	}
-	log.Printf("udc bounced (%s) — host will re-enumerate", name)
+	log.Printf("udc bounced (%s) - host will re-enumerate", name)
 }
 
 func stopGadgetAgent() {
@@ -748,26 +736,24 @@ func bytesTrim(b []byte) string {
 	return strings.TrimSpace(string(b))
 }
 
-// effectiveListen drops an ffs:// address when transport is wireless or wpp,
-// even if the USB launcher passed -listen ffs://. The TCP or unix address in
-// the config is used instead, then the compiled default.
-func effectiveListen(chosen, configured, transport string) string {
-	if (transport != cfg.TransportWireless && transport != cfg.TransportWPP) || !strings.HasPrefix(chosen, "ffs://") {
-		return chosen
-	}
-	if configured != "" && !strings.HasPrefix(configured, "ffs://") {
+// effectiveListen is daemon.listen, with two adjustments. Wireless and wpp
+// cannot use FunctionFS, so an ffs:// value becomes the TCP default. USB
+// used to be forced onto FunctionFS by a -listen flag while the compiled
+// default stayed tcp://127.0.0.1:5277, so that exact value still means
+// ffs:///dev/usb-ffs/aa when the transport is usb.
+func effectiveListen(configured, transport string) string {
+	configured = strings.TrimSpace(configured)
+	wireless := transport == cfg.TransportWireless || transport == cfg.TransportWPP
+	if wireless {
+		if configured == "" || strings.HasPrefix(configured, "ffs://") {
+			return "tcp://127.0.0.1:5277"
+		}
 		return configured
 	}
-	return "tcp://127.0.0.1:5277"
-}
-
-func pick(ss ...string) string {
-	for _, s := range ss {
-		if t := strings.TrimSpace(s); t != "" {
-			return t
-		}
+	if configured == "" || configured == "tcp://127.0.0.1:5277" {
+		return "ffs:///dev/usb-ffs/aa"
 	}
-	return ""
+	return configured
 }
 
 func parseAddr(s string) (network, addr string) {

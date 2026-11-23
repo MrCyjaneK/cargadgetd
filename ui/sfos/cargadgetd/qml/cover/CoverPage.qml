@@ -2,6 +2,39 @@ import QtQuick 2.0
 import Sailfish.Silica 1.0
 
 CoverBackground {
+    property int frameMs: 33
+    property bool audioOn: true
+    readonly property int fps: frameMs > 0
+                                 ? Math.floor((1000 + Math.floor(frameMs / 2)) / frameMs)
+                                 : 30
+
+    function readTuning() {
+        var ms = 33
+        var audio = true
+        var sections = PluginSettings.sections
+        for (var s = 0; s < sections.length; ++s) {
+            var rows = sections[s].rows || []
+            for (var i = 0; i < rows.length; ++i) {
+                if (rows[i].label === "Frame ms") {
+                    var n = parseInt(rows[i].value, 10)
+                    if (n > 0)
+                        ms = n
+                } else if (rows[i].label === "Audio enabled") {
+                    audio = rows[i].value === "1"
+                }
+            }
+        }
+        frameMs = ms
+        audioOn = audio
+    }
+
+    Component.onCompleted: readTuning()
+
+    Connections {
+        target: PluginSettings
+        onSectionsChanged: readTuning()
+    }
+
     Column {
         anchors.centerIn: parent
         width: parent.width - 2 * Theme.paddingMedium
@@ -34,9 +67,9 @@ CoverBackground {
             horizontalAlignment: Text.AlignHCenter
             color: Theme.secondaryColor
             font.pixelSize: Theme.fontSizeExtraSmall
-            text: qsTr("%1 fps · audio %2")
-                .arg(Daemon.fps)
-                .arg(Daemon.audioEnabled ? qsTr("on") : qsTr("off"))
+            text: qsTr("%1 fps - audio %2")
+                .arg(fps)
+                .arg(audioOn ? qsTr("on") : qsTr("off"))
         }
     }
 }

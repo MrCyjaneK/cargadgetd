@@ -99,7 +99,7 @@ func awaitChannel(ctx context.Context, wait time.Duration, lookup func() (uint8,
 			return ch, err
 		}
 		if misses%5 == 0 {
-			log.Printf("%v — retrying", err)
+			log.Printf("%v - retrying", err)
 		}
 		misses++
 		timer := time.NewTimer(wait)

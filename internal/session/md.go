@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,6 +33,20 @@ const (
 	MsgVoiceSessionRequest      = 0x0011
 	MsgAudioFocusRequest        = 0x0012
 	MsgAudioFocusResponse       = 0x0013
+
+	MsgChannelCloseNotification    = 0x0009
+	MsgByeByeRequest               = 0x000f
+	MsgByeByeResponse              = 0x0010
+	MsgCarConnectedDevicesRequest  = 0x0014
+	MsgCarConnectedDevicesResponse = 0x0015
+	MsgUserSwitchRequest           = 0x0016
+	MsgBatteryStatusNotification   = 0x0017
+	MsgCallAvailabilityStatus      = 0x0018
+	MsgUserSwitchResponse          = 0x0019
+	MsgServiceDiscoveryUpdate      = 0x001a
+	MsgUnexpectedMessage           = 0x00ff
+	MsgInternalError               = 0x0fff
+	MsgHardShutdown                = 0xdead
 )
 
 // Media / input (channel-specific).
@@ -44,13 +59,27 @@ const (
 	MediaSetupResponse = 0x8003
 	MediaAck           = 0x8004
 	VideoFocusInd      = 0x8008
-	// Sensor channel: MD opens it and StartRequests types the HU advertised.
-	// HU replies with SensorStartResponse and streams SensorEvent (car → phone).
+
+	MediaMicRequest               = 0x8005
+	MediaMicResponse              = 0x8006
+	VideoFocusRequest             = 0x8007
+	MediaUpdateUIConfigRequest    = 0x8009
+	MediaUpdateUIConfigReply      = 0x800a
+	MediaActionTaken              = 0x800c
+	MediaOverlayParams            = 0x800d
+	MediaOverlayStart             = 0x800e
+	MediaOverlayStop              = 0x800f
+	MediaOverlaySession           = 0x8010
+	MediaUpdateHUUIConfigRequest  = 0x8011
+	MediaUpdateHUUIConfigResponse = 0x8012
+	MediaStats                    = 0x8013
+	MediaOptions                  = 0x8014
+	MediaCriticalUI               = 0x8015
+
 	SensorStartRequest  = 0x8001
 	SensorStartResponse = 0x8002
 	SensorEvent         = 0x8003
-	// AudioUnderflow (0x800b): HU → MD when the audio sink starves (newer AA).
-	// Seen after one-shot beep PCM with no continuous stream → session death under tap storms.
+
 	AudioUnderflow = 0x800b
 
 	InputEvent             = 0x8001
@@ -58,7 +87,6 @@ const (
 	InputHandshakeResponse = 0x8003
 )
 
-// Channel IDs we expect from a typical HU SDR (test peer uses these).
 const (
 	ChanSensor = 1
 	ChanVideo  = 2
@@ -66,19 +94,14 @@ const (
 	ChanAudio  = 4
 )
 
-// MaxUSBAudioInFlight is how many unacked PCM messages USB may have in flight.
-// Video stays at 1. Audio needs 2: DHU MediaAck often lands in ~70–80ms, and
-// waiting for that ack before the next 42ms tick stretched playback to ~0.5×.
 const MaxUSBAudioInFlight int32 = 2
 
-// Event delivered to control clients / tests.
 type Event struct {
 	Type    string
 	Channel uint8
 	Payload []byte
 }
 
-// MD is the phone/MD session endpoint.
 type MD struct {
 	rw  io.ReadWriter
 	ssl *aassl.Session
@@ -105,6 +128,11 @@ type MD struct {
 	inputButtons []int
 	sensorTypes  []int
 
+	// side is every advertised service we do not drive (bluetooth, navigation,
+	// the audio sinks we did not pick, ...) so messages can be logged.
+	side       []sideChannel
+	sideOpened map[uint8]struct{}
+
 	Events   chan Event
 	ready    chan struct{}
 	done     chan struct{} // closed when the session ends; stops the writer
@@ -117,10 +145,10 @@ type MD struct {
 	started   bool
 
 	sendQ  chan outMsg // video / other bulk
-	ctrlQ  chan outMsg // control replies — writer prefers these (pings!)
-	audioQ chan outMsg // constant PCM — between ctrl and video so large IDRs cannot starve the sink
+	ctrlQ  chan outMsg // control replies - writer prefers these (pings!)
+	audioQ chan outMsg // constant PCM - between ctrl and video so large IDRs cannot starve the sink
 
-	// usbBulk: FunctionFS transport — larger TLS-safe chunks + inter-fragment pause.
+	// usbBulk: FunctionFS transport - larger TLS-safe chunks + inter-fragment pause.
 	usbBulk bool
 
 	// videoCredit wakes ReserveVideoCredit when a MediaAck arrives.
@@ -130,7 +158,7 @@ type MD struct {
 	videoInFlight     atomic.Int32
 	videoUnackedSince atomic.Int64
 	// audioCredit / audioInFlight: PCM had no flow control while video was
-	// credit-gated — capture showed DHU OUT dying right after a 9.6KiB audio
+	// credit-gated - capture showed DHU OUT dying right after a 9.6KiB audio
 	// URB, then our video-hold idled the pipe. Gate audio the same way.
 	// Cap is MaxUSBAudioInFlight (2): MediaAck RTT is often ~70–80ms, so a
 	// single outstanding 42ms chunk made the FIFO play at ~0.5×.
@@ -151,6 +179,9 @@ type MD struct {
 	audioFocusGrant atomic.Bool
 
 	audioUnderflowN atomic.Uint64
+
+	protoMaj uint16
+	protoMin uint16
 }
 
 type outMsg struct {
@@ -177,7 +208,7 @@ func NewMD(rw io.ReadWriter, ssl *aassl.Session, logger *log.Logger) *MD {
 		openWait:     make(map[uint8]chan struct{}),
 		setupWait:    make(map[uint8]chan struct{}),
 		videoGo:      make(chan struct{}),
-		sendQ:        make(chan outMsg, 2), // shallow — USB backpressure
+		sendQ:        make(chan outMsg, 2), // shallow - USB backpressure
 		ctrlQ:        make(chan outMsg, 128),
 		audioQ:       make(chan outMsg, MaxUSBAudioInFlight), // queued PCM while AIO writes
 		videoCredit:  make(chan struct{}, 1),
@@ -199,7 +230,7 @@ func (m *MD) SetUSBBulk(v bool) {
 func (m *MD) Run() error {
 	go m.writer()
 	err := m.reader()
-	m.doneOnce.Do(func() { close(m.done) }) // stop writer — one leaked per session otherwise
+	m.doneOnce.Do(func() { close(m.done) }) // stop writer - one leaked per session otherwise
 	return err
 }
 
@@ -207,7 +238,7 @@ func (m *MD) writer() {
 	for {
 		select {
 		case <-m.done:
-			return // session over — do NOT drain queues against a closing SSL/transport
+			return // session over - do NOT drain queues against a closing SSL/transport
 		default:
 		}
 		// Pings always first. Prefer video over audio so 25/s PCM cannot bury
@@ -322,7 +353,10 @@ func (m *MD) writeOut(msg outMsg) {
 	if msg.done != nil {
 		msg.done <- err
 	}
-	if err != nil && msg.channel == 0 {
+	if err != nil && (msg.channel == 0 || !m.usbBulk) {
+		if msg.channel != 0 {
+			m.log.Printf("tx error: %v", err)
+		}
 		m.fail(err)
 	} else if err != nil {
 		m.log.Printf("media tx error (drop): %v", err)
@@ -385,7 +419,7 @@ func (m *MD) writeMedia(msg outMsg) {
 	w := m.preemptW()
 	if m.usbBulk {
 		// While AIO media URB awaits the host, drain ctrl/pongs (same goroutine,
-		// nested AIO wait — see ffs/aio_linux.go).
+		// nested AIO wait - see ffs/aio_linux.go).
 		if eps, ok := m.rw.(yieldWriter); ok {
 			w = &aioYieldWriter{e: eps, yield: m.serviceCtrl}
 		}
@@ -409,6 +443,15 @@ func (m *MD) writeMedia(msg outMsg) {
 		}
 	}
 	err := frame.WriteEncryptedYield(w, msg.channel, msg.flags, msg.payload, m.ssl.Encrypt, between, chunk)
+	if err != nil && !m.usbBulk {
+		m.log.Printf("tx error: %v", err)
+		m.logTX(msg.channel, msg.flags, len(msg.payload))
+		if msg.done != nil {
+			msg.done <- err
+		}
+		m.fail(err)
+		return
+	}
 	if f, ok := m.rw.(interface{ Flush() error }); ok {
 		_ = f.Flush()
 	}
@@ -488,7 +531,7 @@ func (p *preemptWriter) Write(b []byte) (int, error) {
 		n, err := p.w.Write(b[off:])
 		if n > 0 {
 			off += n
-			deadline = time.Now().Add(800 * time.Millisecond) // progress — extend
+			deadline = time.Now().Add(800 * time.Millisecond) // progress - extend
 		}
 		if err == nil {
 			if n == 0 {
@@ -500,7 +543,7 @@ func (p *preemptWriter) Write(b []byte) (int, error) {
 			if off == 0 && time.Now().After(deadline) {
 				return 0, fmt.Errorf("ffs: write busy timeout")
 			}
-			// Nothing of this buffer is on the wire yet — pong freely, retry.
+			// Nothing of this buffer is on the wire yet - pong freely, retry.
 			p.m.serviceCtrl()
 			time.Sleep(1 * time.Millisecond)
 			continue
@@ -512,9 +555,9 @@ func (p *preemptWriter) Write(b []byte) (int, error) {
 
 var (
 	errSendCanceled = fmt.Errorf("send canceled")
-	// ErrNoVideoCredit: USB still has an unacked video AU — skip this tick.
+	// ErrNoVideoCredit: USB still has an unacked video AU - skip this tick.
 	ErrNoVideoCredit = fmt.Errorf("no video credit")
-	// ErrNoAudioCredit: USB still has an unacked PCM chunk — skip this chunk.
+	// ErrNoAudioCredit: USB still has an unacked PCM chunk - skip this chunk.
 	ErrNoAudioCredit = fmt.Errorf("no audio credit")
 	errSendQueueFull = fmt.Errorf("send queue full")
 	errSendTimeout   = fmt.Errorf("send timeout")
@@ -526,9 +569,12 @@ func (m *MD) fail(err error) {
 	default:
 	}
 	m.doneOnce.Do(func() { close(m.done) })
-	// Unblock a reader stuck in ep2 Read so Run() returns promptly.
 	if eps, ok := m.rw.(endpointStopper); ok {
 		eps.Shutdown(err)
+		return
+	}
+	if c, ok := m.rw.(io.Closer); ok {
+		_ = c.Close()
 	}
 }
 
@@ -537,7 +583,7 @@ func (m *MD) enqueue(channel, flags uint8, payload []byte) error {
 	return m.enqueueTimeout(channel, flags, payload, 3*time.Second)
 }
 
-// enqueueAsync is for the reader path (e.g. StartIndication, Ping) — must not deadlock
+// enqueueAsync is for the reader path (e.g. StartIndication, Ping) - must not deadlock
 // behind a stalled media USB write.
 func (m *MD) enqueueAsync(channel, flags uint8, payload []byte) {
 	msg := outMsg{channel: channel, flags: flags, payload: append([]byte{}, payload...)}
@@ -561,7 +607,7 @@ func (m *MD) sendPlain(channel uint8, msgType uint16, rest []byte) error {
 }
 
 // sendEnc writes an encrypted bulk frame. extraFlags may include FlagSpecific
-// (control/ChannelOpen only — AACS/DHU reject Specific on media setup/data).
+// (control/ChannelOpen only - AACS/DHU reject Specific on media setup/data).
 func (m *MD) sendEnc(channel, extraFlags uint8, msgType uint16, rest []byte) error {
 	p := frame.PutU16(nil, msgType)
 	p = append(p, rest...)
@@ -689,7 +735,8 @@ func (m *MD) handle(channel uint8, flags uint8, payload []byte) error {
 		}
 		maj := binary.BigEndian.Uint16(body[0:2])
 		min := binary.BigEndian.Uint16(body[2:4])
-		m.log.Printf("version request %d.%d body=%x", maj, min, body)
+		m.protoMaj, m.protoMin = maj, min
+		m.log.Printf("version request %d.%d body=%x video_ack=%v audio_ack=%v", maj, min, body, m.videoAckRequired(), m.audioAckRequired())
 		// if maj != 1 {
 		// return fmt.Errorf("unsupported major %d", maj)
 		// }
@@ -748,7 +795,7 @@ func (m *MD) handle(channel uint8, flags uint8, payload []byte) error {
 		return nil
 
 	case MsgPingRequest:
-		// Never block the reader on ping — media USB writes can stall waiting for the HU,
+		// Never block the reader on ping - media USB writes can stall waiting for the HU,
 		// and a blocked reader cannot drain ep2 / reply, which deadlocks DHU (ping timeout
 		// + BAD_DECRYPT / stream broken). Control queue is prioritized in writer().
 		p := frame.PutU16(nil, MsgPingResponse)
@@ -767,13 +814,13 @@ func (m *MD) handle(channel uint8, flags uint8, payload []byte) error {
 			m.audioFocusOnce.Do(func() { close(m.audioFocusOK) })
 		} else {
 			m.audioFocusGrant.Store(false)
-			m.log.Printf("audio focus NOT granted — PCM must stop")
+			m.log.Printf("audio focus NOT granted - PCM must stop")
 		}
 		m.emit(Event{Type: "audio_focus", Payload: append([]byte{}, body...)})
 		return nil
 
 	case MsgNavigationFocusRequest:
-		// Some OEM HUs send this toward the MD. Unhandled is fatal — ACK projected.
+		// Some OEM HUs send this toward the MD. Unhandled is fatal - ACK projected.
 		m.log.Printf("nav focus request body=%x", body)
 		m.capturef("NAV_FOCUS_REQ", "body=%x", body)
 		return m.sendEnc(0, 0, MsgNavigationFocusResponse, []byte{0x08, 0x01})
@@ -790,7 +837,15 @@ func (m *MD) handle(channel uint8, flags uint8, payload []byte) error {
 		m.capturef("VOICE_SESSION", "body=%x", body)
 		return nil
 
+	case MsgServiceDiscoveryUpdate:
+		m.logKnown("control", 0, msgType, body)
+		m.scheduleSideServices(body)
+		return nil
+
 	default:
+		if m.logKnown("control", 0, msgType, body) {
+			return nil
+		}
 		return m.unhandled("control", 0, msgType, body)
 	}
 }
@@ -800,6 +855,13 @@ func (m *MD) handleChannel(channel uint8, flags uint8, msgType uint16, body, ful
 		m.log.Printf("channel %d open ok body=%x", channel, body)
 		m.signalWait(m.openWait, channel)
 		m.emit(Event{Type: "channel_open_ok", Channel: channel})
+		return nil
+	}
+	if kind, ok := m.sideKind(channel); ok {
+		if m.handleSide(kind, channel, msgType, body, full) {
+			return nil
+		}
+		m.logSide(kind, channel, msgType, body)
 		return nil
 	}
 
@@ -838,7 +900,7 @@ func (m *MD) handleChannel(channel uint8, flags uint8, msgType uint16, body, ful
 		switch msgType {
 		case SensorStartRequest:
 			st, _ := protoVarintField(body, 1)
-			m.log.Printf("sensor start request from HU type=%d (%s) body=%x — ACK only (MD does not send SensorEvent)",
+			m.log.Printf("sensor start request from HU type=%d (%s) body=%x - ACK only (MD does not send SensorEvent)",
 				st, sensorTypeName(int(st)), body)
 			m.capturef("SENSOR_START_REQ", "type=%d (%s) body=%x", st, sensorTypeName(int(st)), body)
 			resp := frame.PutU16(nil, SensorStartResponse)
@@ -867,7 +929,7 @@ func (m *MD) handleChannel(channel uint8, flags uint8, msgType uint16, body, ful
 		case VideoFocusInd:
 			return m.onVideoFocus(channel, body)
 		case MediaStopInd:
-			m.log.Printf("video MediaStopInd body=%x — pause streaming", body)
+			m.log.Printf("video MediaStopInd body=%x - pause streaming", body)
 			m.capturef("VIDEO_STOP", "body=%x", body)
 			m.videoStreaming.Store(false)
 			m.clearVideoCredit("MediaStop")
@@ -877,6 +939,9 @@ func (m *MD) handleChannel(channel uint8, flags uint8, msgType uint16, body, ful
 			m.onVideoAck()
 			return nil
 		default:
+			if m.logKnown("video", channel, msgType, body) {
+				return nil
+			}
 			return m.unhandled("video", channel, msgType, body)
 		}
 	case m.AudioCh:
@@ -887,7 +952,7 @@ func (m *MD) handleChannel(channel uint8, flags uint8, msgType uint16, body, ful
 			m.emit(Event{Type: "audio_setup_ok", Channel: channel})
 			return nil
 		case MediaStopInd:
-			m.log.Printf("audio MediaStopInd body=%x — stop PCM until re-Start", body)
+			m.log.Printf("audio MediaStopInd body=%x - stop PCM until re-Start", body)
 			m.capturef("AUDIO_STOP", "body=%x", body)
 			if m.audioInFlight.Load() > 0 {
 				m.audioInFlight.Store(0)
@@ -910,14 +975,20 @@ func (m *MD) handleChannel(channel uint8, flags uint8, msgType uint16, body, ful
 		case AudioUnderflow:
 			n := m.audioUnderflowN.Add(1)
 			if n <= 5 || n%25 == 0 {
-				m.log.Printf("audio underflow #%d (sink starved — need continuous PCM)", n)
+				m.log.Printf("audio underflow #%d (sink starved - need continuous PCM)", n)
 			}
 			m.capturef("AUDIO_UNDERFLOW", "#%d body=%x", n, body)
 			return nil
 		default:
+			if m.logKnown("audio", channel, msgType, body) {
+				return nil
+			}
 			return m.unhandled("audio", channel, msgType, body)
 		}
 	default:
+		if m.logKnown("ch", channel, msgType, body) {
+			return nil
+		}
 		return m.unhandled("ch", channel, msgType, body)
 	}
 }
@@ -937,18 +1008,23 @@ func (m *MD) onVideoFocus(channel uint8, body []byte) error {
 	m.log.Printf("video focus ind body=%x focus=%d", body, focus)
 	m.capturef("VIDEO_FOCUS", "focus=%d body=%x", focus, body)
 	if !videoFocusProjected(focus) {
-		m.log.Printf("video focus lost (focus=%d) — pause streaming", focus)
+		m.log.Printf("video focus lost (focus=%d) - pause streaming", focus)
 		m.videoStreaming.Store(false)
 		m.clearVideoCredit("focus_lost")
 		m.emit(Event{Type: "video_focus_lost", Channel: channel, Payload: append([]byte{}, body...)})
 		return nil
 	}
 	if m.videoStreaming.Load() {
-		m.log.Printf("video focus projected (focus=%d) — already streaming", focus)
+		m.log.Printf("video focus projected (focus=%d) - already streaming", focus)
 		m.emit(Event{Type: "video_focus", Channel: channel, Payload: append([]byte{}, body...)})
 		return nil
 	}
-	// StartIndication: session=0, config_index = chosen video_configs[] entry.
+	m.sendVideoStart(channel)
+	m.emit(Event{Type: "video_focus", Channel: channel, Payload: append([]byte{}, body...)})
+	return nil
+}
+
+func (m *MD) sendVideoStart(channel uint8) {
 	m.mu.Lock()
 	cfgIdx := m.videoCfgIdx
 	vw, vh := m.videoW, m.videoH
@@ -968,8 +1044,6 @@ func (m *MD) onVideoFocus(channel uint8, body []byte) error {
 		close(m.videoGo)
 	}
 	m.mu.Unlock()
-	m.emit(Event{Type: "video_focus", Channel: channel, Payload: append([]byte{}, body...)})
-	return nil
 }
 
 func (m *MD) onVideoAck() {
@@ -994,6 +1068,23 @@ func (m *MD) LastVideoAckAge() time.Duration {
 		return 0
 	}
 	return time.Duration(time.Now().UnixNano() - t)
+}
+
+func (m *MD) LastVideoAckAgeLabel() string {
+	if m.lastVideoAckUnix.Load() == 0 {
+		return "never"
+	}
+	return m.LastVideoAckAge().Round(time.Millisecond).String()
+}
+
+// videoAckRequired is true when this protocol still flow-controls video with
+// MediaAck. Head units at 6.0 and above (LIVI 6.1) do not ack video.
+func (m *MD) videoAckRequired() bool {
+	return m.protoMaj < 6
+}
+
+func (m *MD) audioAckRequired() bool {
+	return m.protoMaj < 5
 }
 
 func (m *MD) clearVideoCredit(why string) {
@@ -1030,10 +1121,39 @@ func (m *MD) signalWait(wait map[uint8]chan struct{}, id uint8) {
 	}
 }
 
+func mediaSinkCluster(media []byte) bool {
+	if len(media) == 0 {
+		return false
+	}
+	if id, ok := protoVarintField(media, 6); ok && id != 0 {
+		return true
+	}
+	if typ, ok := protoVarintField(media, 7); ok && typ != 0 {
+		return true
+	}
+	return false
+}
+
+func inputMainTouch(ch []byte, w, h int) bool {
+	if w <= 0 || h <= 0 {
+		return false
+	}
+	in := lengthField(ch, 4)
+	if len(in) == 0 {
+		return true
+	}
+	if id, ok := protoVarintField(in, 5); ok && id != 0 {
+		return false
+	}
+	return true
+}
+
 func (m *MD) parseSDR(body []byte) {
 	m.log.Printf("SDR raw (%d bytes)=%x", len(body), body)
 	// ServiceDiscoveryResponse: repeated Channel channels = 1
 	var audioSinks []audioSink
+	var side []sideChannel
+	var sawVideo, sawMainVideo, sawInput, sawMainInput, sawSensor bool
 	i := 0
 	for i < len(body) {
 		tag, n := readVarint(body[i:])
@@ -1063,12 +1183,34 @@ func (m *MD) parseSDR(body []byte) {
 		}
 		switch kind {
 		case "video":
+			media := channelMedia(msg)
+			cfgs := parseMediaVideoConfigs(media)
+			cluster := mediaSinkCluster(media)
 			m.mu.Lock()
-			m.VideoCh = uint8(id)
-			m.videoCfgs = parseMediaVideoConfigs(channelMedia(msg))
-			cfgs := append([]videoCfg(nil), m.videoCfgs...)
+			take := false
+			if !cluster && !sawMainVideo {
+				if sawVideo && m.VideoCh != 0 {
+					side = append(side, sideChannel{id: m.VideoCh, kind: "video"})
+				}
+				take = true
+				sawVideo = true
+				sawMainVideo = true
+			} else if !sawVideo {
+				take = true
+				sawVideo = true
+			} else {
+				side = append(side, sideChannel{id: uint8(id), kind: "video"})
+			}
+			if take {
+				m.VideoCh = uint8(id)
+				m.videoCfgs = cfgs
+			}
 			m.mu.Unlock()
-			m.log.Printf("SDR video channel=%d configs=%s", id, formatVideoCfgs(cfgs))
+			role := "main"
+			if cluster {
+				role = "cluster"
+			}
+			m.log.Printf("SDR video channel=%d %s configs=%s", id, role, formatVideoCfgs(cfgs))
 		case "audio":
 			media := channelMedia(msg)
 			typ := parseMediaAudioType(media)
@@ -1078,10 +1220,27 @@ func (m *MD) parseSDR(body []byte) {
 		case "input":
 			w, h := parseInputScreenSize(msg)
 			btns := parseInputButtons(msg)
+			mainTouch := inputMainTouch(msg, w, h)
 			m.mu.Lock()
-			m.InputCh = uint8(id)
-			m.inputW, m.inputH = w, h
-			m.inputButtons = btns
+			take := false
+			if mainTouch && !sawMainInput {
+				if sawInput && m.InputCh != 0 {
+					side = append(side, sideChannel{id: m.InputCh, kind: "input"})
+				}
+				take = true
+				sawInput = true
+				sawMainInput = true
+			} else if !sawInput {
+				take = true
+				sawInput = true
+			} else {
+				side = append(side, sideChannel{id: uint8(id), kind: "input"})
+			}
+			if take {
+				m.InputCh = uint8(id)
+				m.inputW, m.inputH = w, h
+				m.inputButtons = btns
+			}
 			m.mu.Unlock()
 			if w > 0 && h > 0 {
 				m.log.Printf("SDR input channel=%d touch=%dx%d buttons=%v", id, w, h, btns)
@@ -1092,14 +1251,24 @@ func (m *MD) parseSDR(body []byte) {
 		case "sensor":
 			types := parseSensorTypes(msg)
 			m.mu.Lock()
+			if sawSensor && m.SensorCh != 0 {
+				side = append(side, sideChannel{id: m.SensorCh, kind: "sensor"})
+			}
+			sawSensor = true
 			m.SensorCh = uint8(id)
 			m.sensorTypes = types
 			m.mu.Unlock()
 			m.log.Printf("SDR sensor channel=%d types=%s blob=%x", id, formatSensorTypes(types), msg)
 			m.capturef("SDR", "sensor ch=%d types=%s blob=%x", id, formatSensorTypes(types), msg)
 		default:
+			if kind == "" {
+				kind = "unknown"
+			}
 			m.log.Printf("SDR channel=%d kind=%s blob=%x", id, kind, msg)
 			m.capturef("SDR", "channel=%d kind=%s blob=%x", id, kind, msg)
+			if id > 0 && id < 256 {
+				side = append(side, sideChannel{id: uint8(id), kind: kind})
+			}
 		}
 	}
 	wantIdx, wantW, wantH := videoWant()
@@ -1115,9 +1284,16 @@ func (m *MD) parseSDR(body []byte) {
 	m.audioType = sink.Type
 	m.audioCfgs = sink.Cfgs
 	m.audioRate, m.audioChans, m.audioCfgIdx = ac.Rate, ac.Chans, aidx
+	for _, s := range audioSinks {
+		if s.Ch != 0 && s.Ch != m.AudioCh {
+			side = append(side, sideChannel{id: s.Ch, kind: "audio/" + audioTypeName(s.Type)})
+		}
+	}
+	m.side = side
 	audioCfgs := append([]audioCfg(nil), m.audioCfgs...)
 	audioCh, audioKind := m.AudioCh, audioTypeName(m.audioType)
 	m.mu.Unlock()
+	m.log.Printf("SDR side channels=%s", formatSide(side))
 	ox, oy, cw, ch := c.pad()
 	m.log.Printf("SDR video using %dx%d m=%dx%d ui=%dx%d pad=%d,%d config_index=%d (want idx=%d size=%dx%d)",
 		c.W, c.H, c.MarginW, c.MarginH, cw, ch, ox, oy, idx, wantIdx, wantW, wantH)
@@ -1174,11 +1350,31 @@ func parseChannelBlob(b []byte) (id uint64, kind string) {
 		case 5:
 			kind = "media_input"
 		case 6:
-			kind = "bt"
+			kind = "bluetooth"
+		case 7:
+			kind = "radio"
 		case 8:
-			kind = "nav"
+			kind = "navigation"
+		case 9:
+			kind = "media_playback"
+		case 10:
+			kind = "phone_status"
+		case 11:
+			kind = "media_browser"
 		case 12:
 			kind = "vendor"
+		case 13:
+			kind = "notification"
+		case 14:
+			kind = "wifi_projection"
+		case 15:
+			kind = "car_control"
+		case 16:
+			kind = "car_local_media"
+		case 17:
+			kind = "buffered_media"
+		case 18:
+			kind = "car_intent"
 		}
 	}
 	_ = mediaType
@@ -1297,21 +1493,22 @@ func (m *MD) OpenInput() error {
 	if err := m.openChannel(m.InputCh); err != nil {
 		return err
 	}
-	// Claim every known GAL key (and any extra the HU advertised). The HU
-	// only sends buttons we list here — a short echo meant Next/Call never
-	// arrived.
+	return m.sendInputBinding(m.InputCh)
+}
+
+func (m *MD) sendInputBinding(ch uint8) error {
 	m.mu.Lock()
 	hu := append([]int(nil), m.inputButtons...)
 	m.mu.Unlock()
 	btns := handshakeButtons(hu)
 	body := handshakeBody(btns)
-	m.log.Printf("input handshake buttons=%v (hu_sdr=%v)", btns, hu)
-	m.capturef("INPUT_HANDSHAKE", "buttons=%v hu_sdr=%v", btns, hu)
-	return m.sendEnc(m.InputCh, 0, InputHandshakeRequest, body)
+	m.log.Printf("input handshake channel=%d buttons=%v (hu_sdr=%v)", ch, btns, hu)
+	m.capturef("INPUT_HANDSHAKE", "channel=%d buttons=%v hu_sdr=%v", ch, btns, hu)
+	return m.sendEnc(ch, 0, InputHandshakeRequest, body)
 }
 
 // OpenSensor opens the HU sensor channel (car → phone). Do not send
-// SensorStartRequest — DHU/Subaru treat our encoding as a bad gal.SensorRequest
+// SensorStartRequest - DHU/Subaru treat our encoding as a bad gal.SensorRequest
 // and drop the link. If the HU StartRequests the other way, ACK only.
 func (m *MD) OpenSensor() error {
 	if m.SensorCh == 0 {
@@ -1323,8 +1520,319 @@ func (m *MD) OpenSensor() error {
 	m.mu.Lock()
 	types := append([]int(nil), m.sensorTypes...)
 	m.mu.Unlock()
-	m.log.Printf("sensor channel open types=%s — wait for HU events (no StartRequest)", formatSensorTypes(types))
+	m.log.Printf("sensor channel open types=%s - wait for HU events (no StartRequest)", formatSensorTypes(types))
 	return nil
+}
+
+// sideChannel is an advertised service we open and then only log.
+type sideChannel struct {
+	id   uint8
+	kind string
+}
+
+func (m *MD) OpenSide() {
+	m.mu.Lock()
+	sides := append([]sideChannel(nil), m.side...)
+	m.mu.Unlock()
+	for _, s := range sides {
+		m.openSideOnce(s.id, s.kind)
+	}
+}
+
+func (m *MD) openSideOnce(id uint8, kind string) {
+	if id == 0 {
+		return
+	}
+	m.mu.Lock()
+	if id == m.VideoCh || id == m.AudioCh || id == m.InputCh || (m.SensorCh != 0 && id == m.SensorCh) {
+		m.mu.Unlock()
+		return
+	}
+	if m.sideOpened == nil {
+		m.sideOpened = map[uint8]struct{}{}
+	}
+	if _, ok := m.sideOpened[id]; ok {
+		m.mu.Unlock()
+		return
+	}
+	m.sideOpened[id] = struct{}{}
+	found := false
+	for _, s := range m.side {
+		if s.id == id {
+			found = true
+			break
+		}
+	}
+	if !found {
+		m.side = append(m.side, sideChannel{id: id, kind: kind})
+	}
+	m.mu.Unlock()
+	m.log.Printf("open side channel=%d kind=%s", id, kind)
+	if err := m.openChannel(id); err != nil {
+		m.log.Printf("open side channel=%d kind=%s: %v", id, kind, err)
+		return
+	}
+	if kind == "input" {
+		if err := m.sendInputBinding(id); err != nil {
+			m.log.Printf("input handshake channel=%d: %v", id, err)
+		}
+	}
+}
+
+func (m *MD) handleSide(kind string, channel uint8, msgType uint16, body, full []byte) bool {
+	switch kind {
+	case "input":
+		switch msgType {
+		case InputEvent:
+			m.emit(Event{Type: "touch", Channel: channel, Payload: append([]byte{}, full...)})
+			return true
+		case InputHandshakeResponse:
+			m.log.Printf("input handshake ok channel=%d", channel)
+			return true
+		}
+	case "media_playback":
+		if msgType == MediaPlaybackInput {
+			m.onClusterPad(channel, body)
+			return true
+		}
+	}
+	return false
+}
+
+func (m *MD) scheduleSideServices(body []byte) {
+	id, kind, ok := sideFromUpdate(body)
+	if !ok {
+		return
+	}
+	go m.openSideOnce(id, kind)
+}
+
+func sideFromUpdate(body []byte) (uint8, string, bool) {
+	svc, ok := protoBytesField(body, 1)
+	if !ok {
+		return 0, "", false
+	}
+	id, kind := parseChannelBlob(svc)
+	if id == 0 || id > 255 {
+		return 0, "", false
+	}
+	if kind == "" {
+		kind = "unknown"
+	}
+	if kind == "audio" {
+		kind = "audio/" + audioTypeName(parseMediaAudioType(channelMedia(svc)))
+	}
+	return uint8(id), kind, true
+}
+
+func (m *MD) sideKind(id uint8) (string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, s := range m.side {
+		if s.id == id {
+			return s.kind, true
+		}
+	}
+	return "", false
+}
+
+func (m *MD) logSide(kind string, channel uint8, msgType uint16, body []byte) {
+	if m.logKnown(kind, channel, msgType, body) {
+		return
+	}
+	hex := headHex(body, 32)
+	m.log.Printf("%s ch=%d msg=0x%04x body=%x", kind, channel, msgType, hex)
+	m.capturef("PROTO", "%s ch=%d msg=0x%04x body=%x", kind, channel, msgType, hex)
+}
+
+func formatSide(side []sideChannel) string {
+	if len(side) == 0 {
+		return "(none)"
+	}
+	var b strings.Builder
+	for i, s := range side {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, "%d:%s", s.id, s.kind)
+	}
+	return b.String()
+}
+
+func (m *MD) logKnown(scope string, channel uint8, msgType uint16, body []byte) bool {
+	detail, ok := knownMessage(msgType, body)
+	if !ok {
+		return false
+	}
+	hex := headHex(body, 32)
+	m.log.Printf("%s ch=%d %s body=%x", scope, channel, detail, hex)
+	m.capturef("PROTO", "%s ch=%d %s body=%x", scope, channel, detail, hex)
+	return true
+}
+
+func knownMessage(msgType uint16, body []byte) (string, bool) {
+	switch msgType {
+	case MsgChannelCloseNotification:
+		return "channel close", true
+	case MsgByeByeRequest:
+		if v, ok := protoVarintField(body, 1); ok {
+			return fmt.Sprintf("byebye request reason=%s", byeByeReasonName(int(v))), true
+		}
+		return "byebye request", true
+	case MsgByeByeResponse:
+		return "byebye response", true
+	case MsgCarConnectedDevicesRequest:
+		return "car connected devices request", true
+	case MsgCarConnectedDevicesResponse:
+		return "car connected devices response", true
+	case MsgUserSwitchRequest:
+		return "user switch request", true
+	case MsgBatteryStatusNotification:
+		return formatBattery(body), true
+	case MsgCallAvailabilityStatus:
+		if v, ok := protoVarintField(body, 1); ok {
+			return fmt.Sprintf("call availability available=%t", v != 0), true
+		}
+		return "call availability", true
+	case MsgUserSwitchResponse:
+		return "user switch response", true
+	case MsgServiceDiscoveryUpdate:
+		return "service discovery update", true
+	case MsgUnexpectedMessage:
+		return "unexpected message", true
+	case MsgInternalError:
+		return "internal error", true
+	case MsgHardShutdown:
+		return "hard shutdown", true
+	case MediaMicRequest:
+		return "microphone request", true
+	case MediaMicResponse:
+		return "microphone response", true
+	case VideoFocusRequest:
+		mode, hasMode := protoVarintField(body, 2)
+		reason, hasReason := protoVarintField(body, 3)
+		switch {
+		case hasMode && hasReason:
+			return fmt.Sprintf("video focus request mode=%s reason=%s", videoFocusModeName(int(mode)), videoFocusReasonName(int(reason))), true
+		case hasMode:
+			return fmt.Sprintf("video focus request mode=%s", videoFocusModeName(int(mode))), true
+		case hasReason:
+			return fmt.Sprintf("video focus request reason=%s", videoFocusReasonName(int(reason))), true
+		default:
+			return "video focus request", true
+		}
+	case MediaUpdateUIConfigRequest:
+		return "update ui config request", true
+	case MediaUpdateUIConfigReply:
+		return "update ui config reply", true
+	case MediaActionTaken:
+		return "action taken", true
+	case MediaOverlayParams:
+		return "integrated overlay parameters", true
+	case MediaOverlayStart:
+		return "integrated overlay start", true
+	case MediaOverlayStop:
+		return "integrated overlay stop", true
+	case MediaOverlaySession:
+		return "integrated overlay session", true
+	case MediaUpdateHUUIConfigRequest:
+		return "update head unit ui config request", true
+	case MediaUpdateHUUIConfigResponse:
+		return "update head unit ui config response", true
+	case MediaStats:
+		return "media stats", true
+	case MediaOptions:
+		return "media options", true
+	case MediaCriticalUI:
+		if v, ok := protoVarintField(body, 1); ok {
+			return fmt.Sprintf("critical ui focus=%s", criticalUIFocusName(int(v))), true
+		}
+		return "critical ui", true
+	default:
+		return "", false
+	}
+}
+
+func formatBattery(body []byte) string {
+	s := "battery status"
+	if v, ok := protoVarintField(body, 1); ok {
+		s += fmt.Sprintf(" level=%d", v)
+	}
+	if v, ok := protoVarintField(body, 2); ok {
+		s += fmt.Sprintf(" seconds=%d", v)
+	}
+	if v, ok := protoVarintField(body, 3); ok {
+		s += fmt.Sprintf(" low_power=%t", v != 0)
+	}
+	return s
+}
+
+func byeByeReasonName(v int) string {
+	switch v {
+	case 1:
+		return "USER_SELECTION"
+	case 2:
+		return "DEVICE_SWITCH"
+	case 3:
+		return "NOT_SUPPORTED"
+	case 4:
+		return "NOT_CURRENTLY_SUPPORTED"
+	case 5:
+		return "PROBE_SUPPORTED"
+	case 6:
+		return "WIRELESS_PROJECTION_DISABLED"
+	case 7:
+		return "POWER_DOWN"
+	case 8:
+		return "USER_PROFILE_SWITCH"
+	default:
+		return fmt.Sprintf("%d", v)
+	}
+}
+
+func videoFocusModeName(v int) string {
+	switch v {
+	case 1:
+		return "PROJECTED"
+	case 2:
+		return "NATIVE"
+	case 3:
+		return "NATIVE_TRANSIENT"
+	case 4:
+		return "PROJECTED_NO_INPUT_FOCUS"
+	default:
+		return fmt.Sprintf("%d", v)
+	}
+}
+
+func videoFocusReasonName(v int) string {
+	switch v {
+	case 0:
+		return "UNKNOWN"
+	case 1:
+		return "PHONE_SCREEN_OFF"
+	case 2:
+		return "LAUNCH_NATIVE"
+	case 3:
+		return "LAST_MODE"
+	case 4:
+		return "USER_SELECTION"
+	default:
+		return fmt.Sprintf("%d", v)
+	}
+}
+
+func criticalUIFocusName(v int) string {
+	switch v {
+	case 0:
+		return "UNKNOWN"
+	case 1:
+		return "PROJECTED"
+	case 2:
+		return "NATIVE"
+	default:
+		return fmt.Sprintf("%d", v)
+	}
 }
 
 func (m *MD) unhandled(scope string, channel uint8, msgType uint16, body []byte) error {
@@ -1350,13 +1858,13 @@ func (m *MD) OpenAudio() error {
 	if err := m.await(wait, 5*time.Second, "audio setup"); err != nil {
 		return err
 	}
-	// Request audio focus (GAIN=1) on control channel — must be granted before PCM.
+	// Request audio focus (GAIN=1) on control channel - must be granted before PCM.
 	if err := m.sendEnc(0, 0, MsgAudioFocusRequest, []byte{0x08, 0x01}); err != nil {
 		return err
 	}
 	select {
 	case <-m.audioFocusOK:
-		m.log.Printf("audio focus granted — sending StartIndication")
+		m.log.Printf("audio focus granted - sending StartIndication")
 	case <-time.After(2 * time.Second):
 		return fmt.Errorf("audio focus grant timeout")
 	case <-m.done:
@@ -1377,10 +1885,10 @@ func (m *MD) OpenAudio() error {
 	// sink and correlated with video MediaAck death; the AV loop's first
 	// sendTone covers StartInd. audio.force_prime restores the old primes.
 	if !cfg.Get().Audio.ForcePrime {
-		m.log.Printf("audio StartInd sent — skipping PCM primes")
+		m.log.Printf("audio StartInd sent - skipping PCM primes")
 		return nil
 	}
-	// Prime several 20ms PCM chunks immediately — one is not enough before the
+	// Prime several 20ms PCM chunks immediately - one is not enough before the
 	// AV loop; DHU underflows within milliseconds of StartIndication.
 	silence := make([]byte, 48000*20/1000*2)
 	for i := 0; i < 5; i++ {
@@ -1427,9 +1935,12 @@ func (m *MD) SendH264(tsMicros uint64, annexB []byte) error {
 	return err
 }
 
-// AllowVideo marks video as streamable (focus/Start already done, or start timeout).
 func (m *MD) AllowVideo() {
-	m.videoStreaming.Store(true)
+	if m.videoStreaming.Load() {
+		return
+	}
+	m.log.Printf("video start without focus - sending StartInd")
+	m.sendVideoStart(m.VideoCh)
 }
 
 // VideoStreaming reports whether the HU currently wants video (after focus/Start).
@@ -1444,7 +1955,7 @@ func (m *MD) AudioFocusGranted() bool { return m.audioFocusGrant.Load() }
 // on ErrNoVideoCredit (drop the stale frame). A short stall keeps that
 // credit; GiveUpVideoAck is the only path that drops it.
 func (m *MD) ReserveVideoCredit(wait time.Duration) error {
-	if !m.usbBulk {
+	if !m.usbBulk || !m.videoAckRequired() {
 		return nil
 	}
 	if !m.videoStreaming.Load() {
@@ -1481,7 +1992,7 @@ func (m *MD) ReserveVideoCredit(wait time.Duration) error {
 
 // WaitVideoAcked blocks until inFlight video is MediaAck'd (or timeout).
 func (m *MD) WaitVideoAcked(wait time.Duration) error {
-	if !m.usbBulk {
+	if !m.usbBulk || !m.videoAckRequired() {
 		return nil
 	}
 	deadline := time.After(wait)
@@ -1508,7 +2019,7 @@ func (m *MD) WaitAudioCredit(wait time.Duration) error {
 }
 
 func (m *MD) waitAudioInFlightBelow(wait time.Duration, max int32) error {
-	if !m.usbBulk {
+	if !m.usbBulk || !m.audioAckRequired() {
 		return nil
 	}
 	deadline := time.After(wait)
@@ -1528,7 +2039,7 @@ func (m *MD) waitAudioInFlightBelow(wait time.Duration, max int32) error {
 // audio Bi the host often submits Bo (MediaAck) that never completes; waiting
 // forever then freezes video/pings. Prefer abandon + PCM cooldown over wedging.
 func (m *MD) AbandonAudioCredit(reason string) {
-	if !m.usbBulk {
+	if !m.usbBulk || !m.audioAckRequired() {
 		return
 	}
 	if n := m.audioInFlight.Load(); n > 0 {
@@ -1549,7 +2060,7 @@ func (m *MD) AudioInFlight() int {
 
 // ReleaseVideoCredit undoes ReserveVideoCredit when encode/send never went out.
 func (m *MD) ReleaseVideoCredit() {
-	if !m.usbBulk {
+	if !m.usbBulk || !m.videoAckRequired() {
 		return
 	}
 	if m.videoInFlight.Load() > 0 && m.videoInFlight.Add(-1) == 0 {
@@ -1581,7 +2092,7 @@ func (m *MD) VideoUnackedAge() time.Duration {
 // dropped AU can free the following frame one RTT early; the head unit's
 // max_unacked window covers that one extra.
 func (m *MD) GiveUpVideoAck(after time.Duration) bool {
-	if !m.usbBulk || after <= 0 || m.VideoUnackedAge() < after {
+	if !m.usbBulk || !m.videoAckRequired() || after <= 0 || m.VideoUnackedAge() < after {
 		return false
 	}
 	age := m.VideoUnackedAge()
@@ -1627,7 +2138,7 @@ func (m *MD) SendH264Reserved(tsMicros uint64, annexB []byte) error {
 		return err
 	}
 	if err == nil {
-		if m.usbBulk {
+		if m.usbBulk && m.videoAckRequired() {
 			m.videoUnackedSince.Store(time.Now().UnixNano())
 		}
 		n := m.videoTxN.Add(1)
@@ -1697,7 +2208,8 @@ func (m *MD) enqueuePosted(channel, flags uint8, payload []byte, wait time.Durat
 // SendPCM sends raw PCM audio on the audio channel.
 // On USB, waits until inFlight < MaxUSBAudioInFlight (pipeline of 2).
 func (m *MD) SendPCM(tsMicros uint64, pcm []byte) error {
-	if m.usbBulk {
+	trackAck := m.usbBulk && m.audioAckRequired()
+	if trackAck {
 		wait := 500 * time.Millisecond
 		deadline := time.After(wait)
 		for m.audioInFlight.Load() >= MaxUSBAudioInFlight {
@@ -1718,7 +2230,7 @@ func (m *MD) SendPCM(tsMicros uint64, pcm []byte) error {
 	if m.usbBulk {
 		timeout = 1500 * time.Millisecond
 		err := m.enqueuePosted(m.AudioCh, frame.FlagBulk|frame.FlagEncrypted, p, timeout)
-		if err != nil {
+		if err != nil && trackAck {
 			m.audioInFlight.Add(-1)
 		}
 		return err

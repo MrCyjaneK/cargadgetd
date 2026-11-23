@@ -18,6 +18,18 @@ func TestAudioWantFromConfig(t *testing.T) {
 	if audioWant() != 2 || audioTypeWant() != AudioTypeSystem {
 		t.Fatalf("idx=%d type=%d", audioWant(), audioTypeWant())
 	}
+	cfg.SetForTest(t, func(c *cfg.Config) {
+		c.Audio.Type = "guidance"
+	})
+	if audioTypeWant() != AudioTypeGuidance {
+		t.Fatalf("guidance type=%d", audioTypeWant())
+	}
+	cfg.SetForTest(t, func(c *cfg.Config) {
+		c.Audio.Type = "telephony"
+	})
+	if audioTypeWant() != AudioTypeTelephony {
+		t.Fatalf("telephony type=%d", audioTypeWant())
+	}
 }
 
 func TestParseAudioConfig(t *testing.T) {
@@ -35,11 +47,20 @@ func TestParseAudioConfig(t *testing.T) {
 func TestParseMediaAudioConfigs(t *testing.T) {
 	ac16 := []byte{0x08, 0x80, 0x7d, 0x10, 16, 0x18, 1}
 	ac48 := []byte{0x08, 0x80, 0xf7, 0x02, 0x10, 16, 0x18, 2}
-	mc := []byte{0x08, 1, 0x10, 1} // Audio + Media
+	mc := []byte{0x08, 1, 0x10, 3} // PCM + media (AudioStreamType 3)
 	mc = append(mc, encodeLenKV(3, ac16)...)
 	mc = append(mc, encodeLenKV(3, ac48)...)
 	if parseMediaAudioType(mc) != AudioTypeMedia {
 		t.Fatalf("type %d", parseMediaAudioType(mc))
+	}
+	if parseMediaAudioType([]byte{0x08, 1, 0x10, 1}) != AudioTypeGuidance {
+		t.Fatal("wire value 1 is guidance, not media")
+	}
+	if parseMediaAudioType([]byte{0x08, 1, 0x10, 2}) != AudioTypeSystem {
+		t.Fatal("wire value 2 is system")
+	}
+	if parseMediaAudioType([]byte{0x08, 1, 0x10, 4}) != AudioTypeTelephony {
+		t.Fatal("wire value 4 is telephony")
 	}
 	got := parseMediaAudioConfigs(mc)
 	if len(got) != 2 || got[0].Rate != 16000 || got[1].Rate != 48000 || got[1].Chans != 2 {

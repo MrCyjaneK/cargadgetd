@@ -22,7 +22,7 @@ static const char *droid_step = "idle";
 
 static void droid_trace(const char *s) {
 	droid_step = s;
-	int fd = open("/home/defaultuser/cargadgetd.log", O_WRONLY | O_APPEND | O_CLOEXEC);
+	int fd = open("/tmp/cargadgetd.log", O_WRONLY | O_APPEND | O_CLOEXEC);
 	if (fd < 0)
 		return;
 	char buf[160];
@@ -67,12 +67,39 @@ typedef struct droid_au_out {
 	int cfg_n;
 } droid_au_out;
 
+#define AU_Q 8
+
+typedef struct au_item {
+	uint8_t *data;
+	int n;
+	int sync;
+	uint8_t *cfg;
+	int cfg_n;
+} au_item;
+
 static pthread_mutex_t au_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t au_cv = PTHREAD_COND_INITIALIZER;
-static uint8_t *au_buf;
-static int au_n, au_sync, au_ready, au_err, au_slot_freed;
-static uint8_t *cfg_buf;
-static int cfg_n;
+static au_item auq[AU_Q];
+static int auq_n;
+static int au_err;
+static uint8_t *cfg_pending;
+static int cfg_pending_n;
+static int slotq[8];
+static int slotq_n;
+
+static void au_reset_locked(void) {
+	for (int i = 0; i < auq_n; i++) {
+		free(auq[i].data);
+		free(auq[i].cfg);
+	}
+	memset(auq, 0, sizeof(auq));
+	auq_n = 0;
+	au_err = 0;
+	free(cfg_pending);
+	cfg_pending = 0;
+	cfg_pending_n = 0;
+	slotq_n = 0;
+}
 
 struct droid_push_id {
 	DroidMediaCodec *c;
@@ -99,16 +126,24 @@ static void c_data(void *data, DroidMediaCodecData *enc) {
 	}
 	pthread_mutex_lock(&au_mu);
 	if (enc->codec_config) {
-		free(cfg_buf);
-		cfg_buf = copy;
-		cfg_n = copy ? n : 0;
-	} else {
-		free(au_buf);
-		au_buf = copy;
-		au_n = copy ? n : 0;
-		au_sync = enc->sync ? 1 : 0;
-		au_ready = 1;
+		free(cfg_pending);
+		cfg_pending = copy;
+		cfg_pending_n = copy ? n : 0;
+	} else if (auq_n < AU_Q) {
+		au_item *it = &auq[auq_n++];
+		memset(it, 0, sizeof(*it));
+		it->data = copy;
+		it->n = copy ? n : 0;
+		it->sync = enc->sync ? 1 : 0;
+		if (cfg_pending) {
+			it->cfg = cfg_pending;
+			it->cfg_n = cfg_pending_n;
+			cfg_pending = 0;
+			cfg_pending_n = 0;
+		}
 		pthread_cond_signal(&au_cv);
+	} else {
+		free(copy);
 	}
 	pthread_mutex_unlock(&au_mu);
 }
@@ -119,7 +154,8 @@ static void c_unref(void *data) {
 	if (!id)
 		return;
 	pthread_mutex_lock(&au_mu);
-	au_slot_freed = id->slot + 1;
+	if (slotq_n < 8)
+		slotq[slotq_n++] = id->slot;
 	pthread_cond_signal(&au_cv);
 	pthread_mutex_unlock(&au_mu);
 	free(id);
@@ -299,6 +335,9 @@ static unsigned int droid_fmts(uint32_t *out, unsigned int max) {
 }
 
 static DroidMediaCodec *droid_open_body(int w, int h, int fps, int bitrate, int color, int hw_only, int cbr) {
+	pthread_mutex_lock(&au_mu);
+	au_reset_locked();
+	pthread_mutex_unlock(&au_mu);
 	DroidMediaCodecEncoderMetaData md;
 	memset(&md, 0, sizeof(md));
 	md.parent.type = "video/avc";
@@ -361,7 +400,75 @@ static DroidMediaCodec *droid_open(int w, int h, int fps, int bitrate, int color
 	return j.out;
 }
 
-static int droid_push_body(DroidMediaCodec *c, void *yuv, int size, int64_t ts, int sync, int slot, droid_au_out *out) {
+static DroidMediaCodec *droid_open_alt_body(int w, int h, int fps, int bitrate, int color, int hw_only, int cbr) {
+	pthread_mutex_lock(&au_mu);
+	au_reset_locked();
+	pthread_mutex_unlock(&au_mu);
+	DroidMediaCodecEncoderMetaDataAlt md;
+	memset(&md, 0, sizeof(md));
+	md.parent.type = "video/avc";
+	md.parent.width = w;
+	md.parent.height = h;
+	md.parent.fps = fps;
+	md.parent.flags = hw_only ? DROID_MEDIA_CODEC_HW_ONLY : 0;
+	md.parent.stride = w;
+	md.parent.slice_height = h;
+	md.color_format = color;
+	md.bitrate = bitrate;
+	md.meta_data = 0;
+	md.stride = w;
+	md.slice_height = h;
+	md.max_input_size = w * h * 3 / 2;
+	md.bitrate_mode = cbr ? DROID_MEDIA_CODEC_BITRATE_CONTROL_CBR : DROID_MEDIA_CODEC_BITRATE_CONTROL_VBR;
+	md.codec_specific.h264.prepend_header_to_sync_frames = 1;
+	md.codec_specific.h264.profile = 1;
+	droid_trace("create alt");
+	DroidMediaCodec *c = p_create_enc((DroidMediaCodecEncoderMetaData *)&md);
+	droid_trace(c ? "create alt ok" : "create alt nil");
+	if (!c)
+		return 0;
+	DroidMediaCodecCallbacks cb;
+	memset(&cb, 0, sizeof(cb));
+	cb.signal_eos = c_eos;
+	cb.error = c_error;
+	p_set_cb(c, &cb, c);
+	DroidMediaCodecDataCallbacks dcb;
+	memset(&dcb, 0, sizeof(dcb));
+	dcb.data_available = c_data;
+	p_set_data_cb(c, &dcb, c);
+	droid_trace("start alt");
+	if (!p_start(c)) {
+		droid_trace("start alt failed");
+		p_destroy(c);
+		return 0;
+	}
+	droid_trace("start alt ok");
+	return c;
+}
+
+struct droid_open_alt_job {
+	int w, h, fps, bitrate, color, hw_only, cbr;
+	DroidMediaCodec *out;
+};
+static void droid_open_alt_job_fn(void *p) {
+	struct droid_open_alt_job *j = (struct droid_open_alt_job *)p;
+	j->out = droid_open_alt_body(j->w, j->h, j->fps, j->bitrate, j->color, j->hw_only, j->cbr);
+}
+static DroidMediaCodec *droid_open_alt(int w, int h, int fps, int bitrate, int color, int hw_only, int cbr) {
+	struct droid_open_alt_job j;
+	memset(&j, 0, sizeof(j));
+	j.w = w;
+	j.h = h;
+	j.fps = fps;
+	j.bitrate = bitrate;
+	j.color = color;
+	j.hw_only = hw_only;
+	j.cbr = cbr;
+	call_worker(droid_open_alt_job_fn, &j);
+	return j.out;
+}
+
+static int droid_submit_body(DroidMediaCodec *c, void *yuv, int size, int64_t ts, int sync, int slot) {
 	DroidMediaCodecData d;
 	memset(&d, 0, sizeof(d));
 	d.data.data = yuv;
@@ -377,15 +484,11 @@ static int droid_push_body(DroidMediaCodec *c, void *yuv, int size, int64_t ts, 
 	memset(&cb, 0, sizeof(cb));
 	cb.unref = c_unref;
 	cb.data = id;
-	pthread_mutex_lock(&au_mu);
-	au_ready = 0;
-	au_err = 0;
-	au_slot_freed = 0;
-	free(au_buf);
-	au_buf = 0;
-	au_n = 0;
-	pthread_mutex_unlock(&au_mu);
 	p_queue(c, &d, &cb);
+	return 0;
+}
+
+static int droid_take_body(droid_au_out *out) {
 	struct timespec deadline;
 	clock_gettime(CLOCK_REALTIME, &deadline);
 	deadline.tv_nsec += 400000000L;
@@ -394,51 +497,61 @@ static int droid_push_body(DroidMediaCodec *c, void *yuv, int size, int64_t ts, 
 		deadline.tv_nsec -= 1000000000L;
 	}
 	pthread_mutex_lock(&au_mu);
-	while (!au_ready && !au_err) {
+	while (auq_n == 0 && !au_err) {
 		if (pthread_cond_timedwait(&au_cv, &au_mu, &deadline) == ETIMEDOUT)
 			break;
 	}
 	memset(out, 0, sizeof(*out));
-	if (au_err)
-		out->err = au_err;
-	else if (!au_ready)
-		out->err = -1;
-	else {
-		out->data = au_buf;
-		out->n = au_n;
-		out->sync = au_sync;
-		au_buf = 0;
-		au_n = 0;
-		au_ready = 0;
+	if (auq_n > 0) {
+		au_item it = auq[0];
+		memmove(&auq[0], &auq[1], (size_t)(auq_n - 1) * sizeof(au_item));
+		auq_n--;
+		memset(&auq[auq_n], 0, sizeof(au_item));
+		out->data = it.data;
+		out->n = it.n;
+		out->sync = it.sync;
+		out->cfg_data = it.cfg;
+		out->cfg_n = it.cfg_n;
+		out->cfg = it.cfg ? 1 : 0;
+		pthread_mutex_unlock(&au_mu);
+		return 0;
 	}
-	if (cfg_buf && cfg_n > 0) {
-		out->cfg_data = cfg_buf;
-		out->cfg_n = cfg_n;
-		out->cfg = 1;
-		cfg_buf = 0;
-		cfg_n = 0;
-	}
-	out->slot_freed = au_slot_freed;
+	out->err = au_err ? au_err : -1;
+	au_err = 0;
 	pthread_mutex_unlock(&au_mu);
-	return out->err ? -1 : 0;
+	return -1;
 }
 
-struct droid_push_job {
+static int droid_poll_slots(int *out, int max) {
+	pthread_mutex_lock(&au_mu);
+	int n = slotq_n;
+	if (n > max)
+		n = max;
+	for (int i = 0; i < n; i++)
+		out[i] = slotq[i];
+	int left = slotq_n - n;
+	for (int i = 0; i < left; i++)
+		slotq[i] = slotq[n + i];
+	slotq_n = left;
+	pthread_mutex_unlock(&au_mu);
+	return n;
+}
+
+struct droid_submit_job {
 	DroidMediaCodec *c;
 	void *yuv;
 	int size;
 	int64_t ts;
 	int sync;
 	int slot;
-	droid_au_out *out;
 	int rc;
 };
-static void droid_push_job_fn(void *p) {
-	struct droid_push_job *j = (struct droid_push_job *)p;
-	j->rc = droid_push_body(j->c, j->yuv, j->size, j->ts, j->sync, j->slot, j->out);
+static void droid_submit_job_fn(void *p) {
+	struct droid_submit_job *j = (struct droid_submit_job *)p;
+	j->rc = droid_submit_body(j->c, j->yuv, j->size, j->ts, j->sync, j->slot);
 }
-static int droid_push(DroidMediaCodec *c, void *yuv, int size, int64_t ts, int sync, int slot, droid_au_out *out) {
-	struct droid_push_job j;
+static int droid_submit(DroidMediaCodec *c, void *yuv, int size, int64_t ts, int sync, int slot) {
+	struct droid_submit_job j;
 	memset(&j, 0, sizeof(j));
 	j.c = c;
 	j.yuv = yuv;
@@ -446,9 +559,42 @@ static int droid_push(DroidMediaCodec *c, void *yuv, int size, int64_t ts, int s
 	j.ts = ts;
 	j.sync = sync;
 	j.slot = slot;
-	j.out = out;
-	call_worker(droid_push_job_fn, &j);
+	call_worker(droid_submit_job_fn, &j);
 	return j.rc;
+}
+
+struct droid_take_job {
+	droid_au_out *out;
+	int rc;
+};
+static void droid_take_job_fn(void *p) {
+	struct droid_take_job *j = (struct droid_take_job *)p;
+	j->rc = droid_take_body(j->out);
+}
+static int droid_take(droid_au_out *out) {
+	struct droid_take_job j;
+	j.out = out;
+	j.rc = -1;
+	call_worker(droid_take_job_fn, &j);
+	return j.rc;
+}
+
+struct droid_poll_job {
+	int *out;
+	int max;
+	int n;
+};
+static void droid_poll_job_fn(void *p) {
+	struct droid_poll_job *j = (struct droid_poll_job *)p;
+	j->n = droid_poll_slots(j->out, j->max);
+}
+static int droid_poll(int *out, int max) {
+	struct droid_poll_job j;
+	j.out = out;
+	j.max = max;
+	j.n = 0;
+	call_worker(droid_poll_job_fn, &j);
+	return j.n;
 }
 
 static void droid_close_body(DroidMediaCodec *c) {
@@ -456,6 +602,9 @@ static void droid_close_body(DroidMediaCodec *c) {
 		return;
 	p_stop(c);
 	p_destroy(c);
+	pthread_mutex_lock(&au_mu);
+	au_reset_locked();
+	pthread_mutex_unlock(&au_mu);
 }
 struct droid_close_job { DroidMediaCodec *c; };
 static void droid_close_job_fn(void *p) {
@@ -489,35 +638,55 @@ const (
 )
 
 type droidEnc struct {
-	codec  unsafe.Pointer
-	w, h   int
-	layout int
-	ptr    [2]unsafe.Pointer
-	yuv    [2][]byte
-	busy   [2]uint32
-	free   chan struct{}
-	mu     sync.Mutex
-	out    chan []byte
-	errc   chan error
-	cfg    []byte
-	nalLen int
-	seq    int64
-	first  uint32
+	name    string
+	codec   unsafe.Pointer
+	w, h    int
+	layout  int
+	ptr     [droidSlots]unsafe.Pointer
+	yuv     [droidSlots][]byte
+	busy    [droidSlots]uint32
+	free    chan struct{}
+	mu      sync.Mutex
+	out     chan []byte
+	errc    chan error
+	cfg     []byte
+	nalLen  int
+	seq     int64
+	first   uint32
+	pending int  // submitted frames whose AU has not been returned
+	holdPS  bool // alternative encoder: a leading SPS/PPS buffer is not a failed frame
 }
+
+// Frames left in the codec when Encode returns. Two lets the next color
+// conversion finish before the older access unit is due, which is what
+// keeps 1080p inside a 16.7ms frame. droidSlots must be deeper than that
+// so the conversion has a free buffer.
+const (
+	droidSlots = 4
+	droidPipe  = 2
+)
 
 var droidTab sync.Map // codec pointer → *droidEnc
 
 func newDroid(w, h, fps, bps int) (codec, error) {
+	return openDroid(w, h, fps, bps, false)
+}
+
+func newDroidAlt(w, h, fps, bps int) (codec, error) {
+	return openDroid(w, h, fps, bps, true)
+}
+
+func openDroid(w, h, fps, bps int, alt bool) (codec, error) {
 	var out codec
 	var err error
 	// Hold SIGURG blocked across create/start so Codec2's threads inherit the mask.
 	withoutAsyncPreempt(func() {
-		out, err = newDroidIn(w, h, fps, bps)
+		out, err = newDroidIn(w, h, fps, bps, alt)
 	})
 	return out, err
 }
 
-func newDroidIn(w, h, fps, bps int) (codec, error) {
+func newDroidIn(w, h, fps, bps int, alt bool) (codec, error) {
 	if err := C.droid_load(); err != nil {
 		return nil, fmt.Errorf("dlopen: %s", C.GoString(err))
 	}
@@ -535,30 +704,58 @@ func newDroidIn(w, h, fps, bps int) (codec, error) {
 		bps = minBps
 	}
 	cbps := C.int(bps)
-	c := C.droid_open(C.int(w), C.int(h), C.int(fps), cbps, C.int(color), 1, 1)
-	if c == nil {
-		c = C.droid_open(C.int(w), C.int(h), C.int(fps), cbps, C.int(color), 1, 0)
-	}
-	if c == nil {
-		c = C.droid_open(C.int(w), C.int(h), C.int(fps), cbps, C.int(color), 0, 1)
+	var c *C.DroidMediaCodec
+	name := "droidmedia-hw"
+	kind := "droidmedia"
+	if alt {
+		name = "droidmedia-alt"
+		kind = "droidmedia-alt"
+		c = C.droid_open_alt(C.int(w), C.int(h), C.int(fps), cbps, C.int(color), 1, 1)
+		if c == nil {
+			c = C.droid_open_alt(C.int(w), C.int(h), C.int(fps), cbps, C.int(color), 1, 0)
+		}
+		if c == nil {
+			c = C.droid_open_alt(C.int(w), C.int(h), C.int(fps), cbps, C.int(color), 0, 1)
+		}
+		if c == nil {
+			// Same attempts as Hardware, if this droidmedia is the older layout.
+			kind = "droidmedia-alt-oldabi"
+			c = C.droid_open(C.int(w), C.int(h), C.int(fps), cbps, C.int(color), 1, 1)
+			if c == nil {
+				c = C.droid_open(C.int(w), C.int(h), C.int(fps), cbps, C.int(color), 1, 0)
+			}
+			if c == nil {
+				c = C.droid_open(C.int(w), C.int(h), C.int(fps), cbps, C.int(color), 0, 1)
+			}
+		}
+	} else {
+		c = C.droid_open(C.int(w), C.int(h), C.int(fps), cbps, C.int(color), 1, 1)
+		if c == nil {
+			c = C.droid_open(C.int(w), C.int(h), C.int(fps), cbps, C.int(color), 1, 0)
+		}
+		if c == nil {
+			c = C.droid_open(C.int(w), C.int(h), C.int(fps), cbps, C.int(color), 0, 1)
+		}
 	}
 	if c == nil {
 		return nil, fmt.Errorf("create_encoder failed (color=0x%x nfmt=%d)", color, n)
 	}
-	log.Printf("livevid: droidmedia color=0x%x layout=%d %dx%d @%dfps %dbps nfmt=%d", color, layout, w, h, fps, bps, n)
+	log.Printf("livevid: %s color=0x%x layout=%d %dx%d @%dfps %dbps nfmt=%d", kind, color, layout, w, h, fps, bps, n)
 	sz := yuvSize(w, h)
 	e := &droidEnc{
+		name:   name,
 		codec:  unsafe.Pointer(c),
 		w:      w,
 		h:      h,
 		layout: layout,
-		free:   make(chan struct{}, 2),
+		free:   make(chan struct{}, droidSlots),
 		out:    make(chan []byte, 8),
 		errc:   make(chan error, 1),
 		nalLen: 4,
+		holdPS: alt,
 	}
 	droidTab.Store(e.codec, e)
-	for i := 0; i < 2; i++ {
+	for i := 0; i < droidSlots; i++ {
 		p := C.malloc(C.size_t(sz))
 		if p == nil {
 			e.Close()
@@ -596,12 +793,17 @@ func pickDroidColor(fmts []C.uint32_t) (color int, layout int) {
 	return int(fmts[0]), yuvNV12
 }
 
-func (e *droidEnc) Name() string { return "droidmedia-hw" }
+func (e *droidEnc) Name() string {
+	if e.name != "" {
+		return e.name
+	}
+	return "droidmedia-hw"
+}
 
 func (e *droidEnc) acquire() (int, error) {
 	deadline := time.Now().Add(400 * time.Millisecond)
 	for {
-		for i := 0; i < 2; i++ {
+		for i := 0; i < droidSlots; i++ {
 			if atomic.CompareAndSwapUint32(&e.busy[i], 0, 1) {
 				return i, nil
 			}
@@ -619,7 +821,7 @@ func (e *droidEnc) acquire() (int, error) {
 }
 
 func (e *droidEnc) release(slot int) {
-	if slot < 0 || slot > 1 {
+	if slot < 0 || slot >= droidSlots {
 		return
 	}
 	atomic.StoreUint32(&e.busy[slot], 0)
@@ -629,12 +831,26 @@ func (e *droidEnc) release(slot int) {
 	}
 }
 
+// Encode submits img and returns an access unit from droidPipe frames ago.
+// The first droidPipe calls return (nil, nil) while those frames stay in
+// the codec. Callers skip an empty slice.
 func (e *droidEnc) Encode(img *image.RGBA) ([]byte, error) {
+	split := OnPhase != nil
+	e.drainSlots()
 	slot, err := e.acquire()
 	if err != nil {
 		return nil, err
 	}
+	var t0 time.Time
+	if split {
+		t0 = time.Now()
+	}
 	rgbaToYUV(e.yuv[slot], img, e.layout)
+	var yuvTook time.Duration
+	if split {
+		yuvTook = time.Since(t0)
+		t0 = time.Now()
+	}
 	e.mu.Lock()
 	e.seq++
 	ts := e.seq * 33333
@@ -643,14 +859,81 @@ func (e *droidEnc) Encode(img *image.RGBA) ([]byte, error) {
 	if atomic.CompareAndSwapUint32(&e.first, 0, 1) {
 		sync = 1
 	}
-	var out C.droid_au_out
 	var pushErr C.int
 	withoutAsyncPreempt(func() {
-		pushErr = C.droid_push((*C.DroidMediaCodec)(e.codec), e.ptr[slot], C.int(len(e.yuv[slot])), C.int64_t(ts), C.int(sync), C.int(slot), &out)
+		pushErr = C.droid_submit((*C.DroidMediaCodec)(e.codec), e.ptr[slot], C.int(len(e.yuv[slot])), C.int64_t(ts), C.int(sync), C.int(slot))
 	})
-	if out.slot_freed != 0 {
-		e.release(int(out.slot_freed) - 1)
+	var subTook time.Duration
+	if split {
+		subTook = time.Since(t0)
 	}
+	if pushErr != 0 {
+		e.release(slot)
+		return nil, fmt.Errorf("droid queue failed")
+	}
+	e.drainSlots()
+	e.pending++
+	if e.pending <= droidPipe {
+		if split {
+			OnPhase(Phase{YUV: yuvTook, Submit: subTook})
+		}
+		return nil, nil
+	}
+	if split {
+		t0 = time.Now()
+	}
+	au, err := e.takeAU()
+	if err != nil {
+		return nil, err
+	}
+	e.pending--
+	if split {
+		OnPhase(Phase{YUV: yuvTook, Submit: subTook, Take: time.Since(t0)})
+	}
+	return au, nil
+}
+
+func (e *droidEnc) drainSlots() {
+	var slots [droidSlots]C.int
+	var n C.int
+	withoutAsyncPreempt(func() {
+		n = C.droid_poll(&slots[0], C.int(droidSlots))
+	})
+	for i := 0; i < int(n); i++ {
+		e.release(int(slots[i]))
+	}
+}
+
+func (e *droidEnc) takeAU() ([]byte, error) {
+	// Hardware returns the first buffer as-is. Unisoc's first buffer is
+	// SPS/PPS with no slice (empty AU). The alternative encoder waits for
+	// the picture that follows, inside this same call.
+	tries := 1
+	if e.holdPS {
+		tries = 4
+	}
+	for try := 0; try < tries; try++ {
+		au, err := e.takeOnce()
+		if err != nil {
+			return nil, err
+		}
+		if len(au) > 0 {
+			return au, nil
+		}
+		if !e.holdPS {
+			return nil, fmt.Errorf("empty AU")
+		}
+	}
+	return nil, fmt.Errorf("empty AU")
+}
+
+func (e *droidEnc) takeOnce() ([]byte, error) {
+	var out C.droid_au_out
+	var rc C.int
+	withoutAsyncPreempt(func() {
+		rc = C.droid_take(&out)
+	})
+	e.drainSlots()
 	if out.cfg_data != nil && out.cfg_n > 0 {
 		cfg := C.GoBytes(unsafe.Pointer(out.cfg_data), out.cfg_n)
 		C.free(unsafe.Pointer(out.cfg_data))
@@ -661,23 +944,23 @@ func (e *droidEnc) Encode(img *image.RGBA) ([]byte, error) {
 		raw = C.GoBytes(unsafe.Pointer(out.data), out.n)
 		C.free(unsafe.Pointer(out.data))
 	}
-	if pushErr != 0 && len(raw) == 0 {
-		if out.slot_freed == 0 {
-			e.release(slot)
-		}
+	if rc != 0 && len(raw) == 0 {
 		if out.err != 0 && out.err != -1 {
 			return nil, fmt.Errorf("droid codec error 0x%x", uint32(out.err))
 		}
 		return nil, fmt.Errorf("droid encoder timeout")
 	}
-	au := e.accept(raw, out.sync != 0, false)
-	if len(au) == 0 {
-		return nil, fmt.Errorf("empty AU")
-	}
-	return au, nil
+	return e.accept(raw, out.sync != 0, false), nil
 }
 
 func (e *droidEnc) Close() error {
+	for e.pending > 0 {
+		if _, err := e.takeAU(); err != nil {
+			e.pending = 0
+			break
+		}
+		e.pending--
+	}
 	if e.codec != nil {
 		droidTab.Delete(e.codec)
 		codec := e.codec
@@ -686,7 +969,7 @@ func (e *droidEnc) Close() error {
 			C.droid_close((*C.DroidMediaCodec)(codec))
 		})
 	}
-	for i := 0; i < 2; i++ {
+	for i := 0; i < droidSlots; i++ {
 		if e.ptr[i] != nil {
 			C.free(e.ptr[i])
 			e.ptr[i] = nil

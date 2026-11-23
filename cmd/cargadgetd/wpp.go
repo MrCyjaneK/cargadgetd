@@ -96,8 +96,6 @@ func runWPPOnce(peer string, serve func(io.ReadWriteCloser, string)) wppOutcome 
 		})
 	})
 	if gal.running() {
-		// The video socket is the session. A Bluetooth reset must not
-		// close it. Wait until the projection itself ends.
 		if err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("wpp: bluetooth control closed, projection stays up")
 		}

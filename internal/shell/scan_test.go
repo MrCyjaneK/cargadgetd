@@ -23,8 +23,8 @@ func TestLoadDoesNotBlockOnOpen(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "libcargadgetd_app_hello.so"), []byte("not-elf"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// Bare names, the cert library, and shell plugins share the directory and are not apps.
-	for _, name := range []string{"music.so", "reversegearhead.so", "libcargadgetd_app_foo-bar.so", "libcargadgetd_shell_basic.so"} {
+	// Bare names and shell plugins share the directory and are not apps.
+	for _, name := range []string{"music.so", "notes.so", "libcargadgetd_app_foo-bar.so", "libcargadgetd_shell_basic.so"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("not-elf"), 0o644); err != nil {
 			t.Fatal(err)
 		}

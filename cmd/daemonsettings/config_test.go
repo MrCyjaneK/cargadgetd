@@ -52,6 +52,9 @@ func TestCoreYAMLEdits(t *testing.T) {
 	if err := saveShell("neon"); err != nil {
 		t.Fatal(err)
 	}
+	if err := saveEncoder("software-fast"); err != nil {
+		t.Fatal(err)
+	}
 	if err := saveEncoder("software"); err != nil {
 		t.Fatal(err)
 	}
@@ -89,6 +92,71 @@ func TestCoreYAMLEdits(t *testing.T) {
 	}
 	if string(shareGot) != "video:\n  frame_ms: 40\n" {
 		t.Fatalf("share file changed:\n%s", shareGot)
+	}
+}
+
+func TestEncoderNamesRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	user := filepath.Join(dir, "config.yaml")
+	prevS, prevU := configSearch, configUser
+	t.Cleanup(func() {
+		configSearch, configUser = prevS, prevU
+	})
+	configSearch = []string{user}
+	configUser = user
+	if err := os.WriteFile(user, []byte("video:\n  encoder: \"droidmedia\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var row int
+	found := false
+	for i := 0; i < coreSettingsCount(); i++ {
+		if coreSettingsLabel(i) != "Video encoder" {
+			continue
+		}
+		row = i
+		found = true
+		if coreSettingsGetEnum(i) != "Hardware" {
+			t.Fatalf("shown %q", coreSettingsGetEnum(i))
+		}
+		enums := coreSettingsEnums(i)
+		for _, title := range []string{"Hardware", "Hardware (alt)", "software (normal)", "software (fast)"} {
+			if !strings.Contains(enums, title) {
+				t.Fatalf("menu %q missing %s", enums, title)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("video encoder row missing")
+	}
+	if err := saveEncoder("Hardware (alt)"); err != nil {
+		t.Fatal(err)
+	}
+	if loadCore().encoder != "droidmedia-alt" {
+		t.Fatalf("stored %s", loadCore().encoder)
+	}
+	if coreSettingsGetEnum(row) != "Hardware (alt)" {
+		t.Fatalf("shown after save %q", coreSettingsGetEnum(row))
+	}
+	if err := saveEncoder("droidmedia"); err != nil {
+		t.Fatal(err)
+	}
+	if loadCore().encoder != "droidmedia" {
+		t.Fatalf("id save stored %s", loadCore().encoder)
+	}
+	if coreSettingsSetEnum(row, "droidmedia-alt") != 0 {
+		t.Fatalf("id rejected: %s", coreSettingsError())
+	}
+	if loadCore().encoder != "droidmedia-alt" {
+		t.Fatalf("button stored %s", loadCore().encoder)
+	}
+	if coreSettingsSetEnum(row, "Hardware") != 0 {
+		t.Fatalf("title rejected: %s", coreSettingsError())
+	}
+	if loadCore().encoder != "droidmedia" {
+		t.Fatalf("title stored %s", loadCore().encoder)
+	}
+	if coreSettingsSetEnum(row, "nope") == 0 {
+		t.Fatal("unknown encoder accepted")
 	}
 }
 
@@ -160,8 +228,14 @@ func TestCoreTransportWirelessSkipsMissingGadget(t *testing.T) {
 	if row < 0 {
 		t.Fatal("no transport row")
 	}
-	if coreSettingsGetEnum(row) != "usb" {
+	if coreSettingsGetEnum(row) != "USB" {
 		t.Fatalf("default %q", coreSettingsGetEnum(row))
+	}
+	enums := coreSettingsEnums(row)
+	for _, title := range []string{"USB", "Wireless - developer mode", "Bluetooth"} {
+		if !strings.Contains(enums, title) {
+			t.Fatalf("menu %q missing %s", enums, title)
+		}
 	}
 	if coreSettingsSetEnum(row, "wireless") != 0 {
 		t.Fatal(coreSettingsError())
@@ -169,11 +243,14 @@ func TestCoreTransportWirelessSkipsMissingGadget(t *testing.T) {
 	if loadCore().transport != "wireless" {
 		t.Fatalf("transport %s", loadCore().transport)
 	}
-	if coreSettingsSetEnum(row, "wpp") != 0 {
+	if coreSettingsSetEnum(row, "Bluetooth") != 0 {
 		t.Fatal(coreSettingsError())
 	}
 	if loadCore().transport != "wpp" {
-		t.Fatalf("transport %s", loadCore().transport)
+		t.Fatalf("title stored %s", loadCore().transport)
+	}
+	if coreSettingsGetEnum(row) != "Bluetooth" {
+		t.Fatalf("shown %q", coreSettingsGetEnum(row))
 	}
 	if coreSettingsSetEnum(row, "nope") == 0 {
 		t.Fatal("unknown transport accepted")
@@ -221,5 +298,78 @@ func TestCoreDropFrames(t *testing.T) {
 	}
 	if loadCore().dropFrames != 0 {
 		t.Fatalf("zero %d", loadCore().dropFrames)
+	}
+}
+
+func TestCoreFirstRun(t *testing.T) {
+	dir := t.TempDir()
+	user := filepath.Join(dir, "config.yaml")
+	prevS, prevU := configSearch, configUser
+	t.Cleanup(func() {
+		configSearch, configUser = prevS, prevU
+	})
+	configUser = user
+	configSearch = []string{user}
+	row := -1
+	for i := 0; i < coreSettingsCount(); i++ {
+		if coreSettingsLabel(i) == "First run" && coreSettingsType(i) == settingBool {
+			row = i
+		}
+	}
+	if row < 0 {
+		t.Fatal("no first run row")
+	}
+	if coreSettingsGetBool(row) != 1 {
+		t.Fatal("first run default is off")
+	}
+	if coreSettingsSetBool(row, 1) != 0 {
+		t.Fatal(coreSettingsError())
+	}
+	if !loadCore().firstRun || coreSettingsGetBool(row) != 1 {
+		t.Fatal("first run was not stored")
+	}
+	if coreSettingsSetBool(row, 0) != 0 {
+		t.Fatal(coreSettingsError())
+	}
+	if loadCore().firstRun || coreSettingsGetBool(row) != 0 {
+		t.Fatal("first run stayed on")
+	}
+}
+
+func TestSaveVideoSize(t *testing.T) {
+	dir := t.TempDir()
+	user := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(user, []byte("video:\n  size: \"auto\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prevS, prevU := configSearch, configUser
+	t.Cleanup(func() {
+		configSearch, configUser = prevS, prevU
+	})
+	configUser = user
+	configSearch = []string{user}
+
+	row := -1
+	for i := 0; i < coreSettingsCount(); i++ {
+		if coreSettingsLabel(i) == "Video size" && coreSettingsType(i) == settingEnum {
+			row = i
+		}
+	}
+	if row < 0 {
+		t.Fatal("no video size row")
+	}
+	if coreSettingsEnums(row) != "auto,800x480,1280x720,1920x1080,2560x1440,3840x2160" {
+		t.Fatalf("enums %q", coreSettingsEnums(row))
+	}
+	for _, size := range []string{"2560x1440", "3840x2160"} {
+		if err := saveVideoSize(size); err != nil {
+			t.Fatal(err)
+		}
+		if loadCore().videoSize != size {
+			t.Fatalf("size %s", loadCore().videoSize)
+		}
+	}
+	if err := saveVideoSize("640x480"); err == nil {
+		t.Fatal("unknown size accepted")
 	}
 }

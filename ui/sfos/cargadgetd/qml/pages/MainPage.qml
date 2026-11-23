@@ -4,11 +4,39 @@ import Sailfish.Silica 1.0
 Page {
     id: page
 
+    readonly property bool inSession: Daemon.running && Daemon.ffsReady
+
     SilicaFlickable {
         anchors.fill: parent
+        anchors.bottomMargin: dock.height + Theme.paddingLarge + Theme.paddingMedium
         contentHeight: column.height
 
         PullDownMenu {
+            MenuItem {
+                text: qsTr("Restart handshake")
+                visible: Daemon.aoaRunning
+                enabled: !Daemon.busy
+                onClicked: Daemon.restartAoa()
+            }
+            MenuItem {
+                text: qsTr("Add-ons")
+                onClicked: pageStack.push(Qt.resolvedUrl("AddonsPage.qml"), { "setup": false })
+            }
+            MenuItem {
+                text: qsTr("Pairing")
+                onClicked: pageStack.push(Qt.resolvedUrl("PairPage.qml"), { "setup": false })
+            }
+            MenuItem {
+                text: qsTr("Encoder")
+                onClicked: pageStack.push(Qt.resolvedUrl("EncodePage.qml"), { "setup": false })
+            }
+            MenuItem {
+                text: qsTr("Certificate")
+                onClicked: {
+                    Daemon.probeCerts()
+                    pageStack.push(Qt.resolvedUrl("KeyPage.qml"))
+                }
+            }
             MenuItem {
                 text: qsTr("Settings")
                 onClicked: pageStack.push(Qt.resolvedUrl("SettingsPage.qml"))
@@ -22,7 +50,6 @@ Page {
         Column {
             id: column
             width: parent.width
-            spacing: Theme.paddingMedium
 
             PageHeader { title: qsTr("CarGadgetd") }
 
@@ -30,10 +57,10 @@ Page {
                 x: Theme.horizontalPageMargin
                 width: parent.width - 2 * Theme.horizontalPageMargin
                 wrapMode: Text.Wrap
-                color: Theme.highlightColor
+                color: page.inSession ? Theme.highlightColor : Theme.primaryColor
                 font.pixelSize: Theme.fontSizeLarge
                 text: {
-                    if (Daemon.running && Daemon.ffsReady)
+                    if (page.inSession)
                         return qsTr("In session")
                     if (Daemon.ffsReady)
                         return qsTr("Accessory bound")
@@ -42,6 +69,8 @@ Page {
                     return qsTr("Handshake service stopped")
                 }
             }
+
+            Item { width: 1; height: Theme.paddingSmall }
 
             Label {
                 x: Theme.horizontalPageMargin
@@ -52,93 +81,56 @@ Page {
                 text: Daemon.statusText
             }
 
+            SectionHeader { text: qsTr("Link") }
+
             DetailItem {
                 label: qsTr("Handshake")
-                value: {
-                    if (!Daemon.aoaRunning)
-                        return qsTr("Stopped")
-                    if (Daemon.running && Daemon.ffsReady)
-                        return qsTr("In session")
-                    if (Daemon.ffsReady)
-                        return qsTr("Accessory bound")
-                    return qsTr("Waiting for START")
-                }
+                value: Daemon.aoaRunning ? qsTr("Waiting for START") : qsTr("Stopped")
             }
             DetailItem {
-                label: qsTr("FunctionFS")
-                value: Daemon.ffsReady ? qsTr("Ready") : qsTr("Not yet")
+                label: qsTr("Accessory")
+                value: Daemon.ffsReady ? qsTr("Bound") : qsTr("Not bound")
             }
             DetailItem {
-                label: qsTr("MD daemon")
-                value: Daemon.running ? qsTr("In session") : qsTr("Not started")
-            }
-            DetailItem {
-                label: qsTr("Video")
-                value: {
-                    var sz = Daemon.videoSize === "auto" ? qsTr("auto") : Daemon.videoSize
-                    return qsTr("%1 · %2 fps").arg(sz).arg(Daemon.fps)
-                }
-            }
-            DetailItem {
-                label: qsTr("Audio")
-                value: Daemon.audioEnabled ? qsTr("On") : qsTr("Off")
-            }
-            DetailItem {
-                label: qsTr("GAL certs")
-                value: Daemon.certsMissing ? qsTr("Missing") : qsTr("Loaded")
-            }
-
-            Item { width: 1; height: Theme.paddingLarge }
-
-            Button {
-                anchors.horizontalCenter: parent.horizontalCenter
-                preferredWidth: Theme.buttonWidthLarge
-                enabled: !Daemon.busy
-                visible: !Daemon.aoaRunning
-                text: qsTr("Start handshake")
-                onClicked: Daemon.startAoa()
-            }
-            Button {
-                anchors.horizontalCenter: parent.horizontalCenter
-                preferredWidth: Theme.buttonWidthLarge
-                enabled: !Daemon.busy
-                visible: Daemon.aoaRunning
-                text: qsTr("Restart handshake")
-                onClicked: Daemon.restartAoa()
-            }
-            Button {
-                anchors.horizontalCenter: parent.horizontalCenter
-                preferredWidth: Theme.buttonWidthLarge
-                enabled: !Daemon.busy
-                visible: Daemon.aoaRunning
-                text: qsTr("Stop handshake")
-                onClicked: Daemon.stopAoa()
-            }
-            Button {
-                anchors.horizontalCenter: parent.horizontalCenter
-                preferredWidth: Theme.buttonWidthLarge
-                text: qsTr("View log")
-                onClicked: pageStack.push(Qt.resolvedUrl("LogPage.qml"))
-            }
-            Button {
-                anchors.horizontalCenter: parent.horizontalCenter
-                preferredWidth: Theme.buttonWidthLarge
-                text: qsTr("Certificate details")
-                onClicked: Daemon.probeCerts()
-            }
-
-            Label {
-                x: Theme.horizontalPageMargin
-                width: parent.width - 2 * Theme.horizontalPageMargin
-                wrapMode: Text.Wrap
-                color: Daemon.certsMissing ? Theme.errorColor : Theme.primaryColor
-                font.pixelSize: Theme.fontSizeExtraSmall
-                font.family: "monospace"
-                visible: Daemon.certProbeText.length > 0
-                text: Daemon.certProbeText
+                label: qsTr("Session")
+                value: Daemon.running ? qsTr("In session") : qsTr("Idle")
             }
         }
 
         VerticalScrollDecorator {}
+    }
+
+    Item {
+        id: dock
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: Theme.paddingLarge
+        height: actionButton.height + (busy.running ? busy.height + Theme.paddingMedium : 0)
+
+        BusyIndicator {
+            id: busy
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.bottom: actionButton.top
+            anchors.bottomMargin: Theme.paddingMedium
+            running: Daemon.busy
+            visible: Daemon.busy
+            size: BusyIndicatorSize.Medium
+        }
+
+        Button {
+            id: actionButton
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.bottom: parent.bottom
+            preferredWidth: Theme.buttonWidthLarge
+            enabled: !Daemon.busy
+            text: Daemon.aoaRunning ? qsTr("Stop handshake") : qsTr("Start handshake")
+            onClicked: {
+                if (Daemon.aoaRunning)
+                    Daemon.stopAoa()
+                else
+                    Daemon.startAoa()
+            }
+        }
     }
 }

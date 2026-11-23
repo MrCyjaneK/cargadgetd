@@ -82,3 +82,21 @@ func TestForceIDRAfterPFrames(t *testing.T) {
 		t.Fatalf("ForceIDR AU not IDR (%dB)", len(idr))
 	}
 }
+
+func TestFastEncoderOpens(t *testing.T) {
+	r, err := New(Options{Width: 64, Height: 64, FPS: 10, Bitrate: 400, Encoder: "software-fast"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if r.EncoderName() != "x264-sw-fast" {
+		t.Fatalf("name %q", r.EncoderName())
+	}
+	au, err := r.Encode(time.Date(2026, 8, 12, 0, 8, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(au) < 8 {
+		t.Fatalf("AU %d", len(au))
+	}
+}

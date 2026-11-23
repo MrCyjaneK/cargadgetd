@@ -1,796 +1,234 @@
 #include "daemoncontroller.h"
 
-#include <QDateTime>
-#include <QDir>
-#include <QFile>
-#include <QFileInfo>
-#include <QMap>
+#include <QByteArray>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMetaObject>
-#include <QProcess>
-#include <QRegExp>
-#include <QSettings>
-#include <QStringList>
+#include <QVariantMap>
 #include <QtConcurrent>
 
 #include <dlfcn.h>
-#include <sys/stat.h>
+#include <stdlib.h>
 
 namespace {
-const char *kSettingsOrg = "cargadgetd";
-const char *kSettingsApp = "ui";
-const char *kPackagedMd = "/usr/share/cargadgetd/bin/cargadgetd-md";
-const char *kPackagedGadget = "/usr/share/cargadgetd/bin/cargadgetd-gadget";
-const char *kPackagedConfig = "/usr/share/cargadgetd/config.yaml";
-const char *kFfsEp1 = "/dev/usb-ffs/aa/ep1";
-const char *kFfsListen = "ffs:///dev/usb-ffs/aa";
-const char *kDefaultCerts = "/usr/lib/cargadgetd/plugins/reversegearhead.so";
+const char *kLib = "/usr/lib/cargadgetd/libcargadgetdcontrol.so";
 
-static int clampInt(int v, int lo, int hi)
+struct Api {
+    void *handle = nullptr;
+    QString error;
+
+    int (*mdRunning)() = nullptr;
+    int (*ffsReady)() = nullptr;
+    int (*aoaRunning)() = nullptr;
+    char *(*aoaStart)() = nullptr;
+    char *(*aoaStop)() = nullptr;
+    char *(*aoaRestart)() = nullptr;
+    char *(*logText)() = nullptr;
+    void (*logClear)() = nullptr;
+    int (*certsReady)() = nullptr;
+    char *(*certsProbe)() = nullptr;
+    char *(*certsDownload)() = nullptr;
+    char *(*certsInstall)(const char *) = nullptr;
+    int (*onboardingDone)() = nullptr;
+    int (*addonsPresent)() = nullptr;
+    char *(*addonsFetch)() = nullptr;
+    char *(*addonsRefresh)() = nullptr;
+    int (*addonsCount)() = nullptr;
+    char *(*addonsGroup)(int) = nullptr;
+    char *(*addonsTitle)(int) = nullptr;
+    char *(*addonsDescription)(int) = nullptr;
+    char *(*addonsIcon)(int) = nullptr;
+    int (*addonsInstalled)(int) = nullptr;
+    int (*addonsUpdate)(int) = nullptr;
+    char *(*addonsUrl)(int) = nullptr;
+    char *(*apkStart)() = nullptr;
+    int (*apkList)(const char *) = nullptr;
+    char *(*apkName)(int) = nullptr;
+    char *(*apkPath)(int) = nullptr;
+    int (*apkDir)(int) = nullptr;
+    char *(*benchStart)(const char *) = nullptr;
+    int (*benchRunning)() = nullptr;
+    char *(*benchStatus)() = nullptr;
+    char *(*benchResult)() = nullptr;
+    void (*benchWatch)() = nullptr;
+    void (*benchClear)() = nullptr;
+    int (*encoderCount)() = nullptr;
+    char *(*encoderId)(int) = nullptr;
+    char *(*encoderTitle)(int) = nullptr;
+    int (*transportCount)() = nullptr;
+    char *(*transportId)(int) = nullptr;
+    char *(*transportTitle)(int) = nullptr;
+    char *(*transportBody)(int) = nullptr;
+    char *(*transportHint)(int) = nullptr;
+    int (*transportNeedsPeer)(int) = nullptr;
+    int (*transportRequirePeer)(int) = nullptr;
+};
+
+Api g;
+
+template <typename T>
+void bind(T &fn, const char *name)
 {
-    if (v < lo)
-        return lo;
-    if (v > hi)
-        return hi;
-    return v;
+    fn = reinterpret_cast<T>(dlsym(g.handle, name));
 }
 
-static QString stripComment(const QString &line)
+void loadLib()
 {
-    bool inQ = false;
-    QChar q;
-    for (int i = 0; i < line.size(); ++i) {
-        const QChar c = line.at(i);
-        if (!inQ && c == QLatin1Char('#'))
-            return line.left(i);
-        if (c == QLatin1Char('"') || c == QLatin1Char('\'')) {
-            if (!inQ) {
-                inQ = true;
-                q = c;
-            } else if (c == q && (i == 0 || line.at(i - 1) != QLatin1Char('\\'))) {
-                inQ = false;
-            }
-        }
+    static bool tried = false;
+    if (tried)
+        return;
+    tried = true;
+    g.handle = dlopen(kLib, RTLD_NOW);
+    if (!g.handle) {
+        const char *e = dlerror();
+        g.error = e ? QString::fromLocal8Bit(e) : QStringLiteral("dlopen failed");
+        g.error = QStringLiteral("libcargadgetdcontrol.so is missing (%1)").arg(g.error);
+        return;
     }
-    return line;
+    bind(g.mdRunning, "cargadgetd_internal_md_running");
+    bind(g.ffsReady, "cargadgetd_internal_ffs_ready");
+    bind(g.aoaRunning, "cargadgetd_internal_aoa_running");
+    bind(g.aoaStart, "cargadgetd_internal_aoa_start");
+    bind(g.aoaStop, "cargadgetd_internal_aoa_stop");
+    bind(g.aoaRestart, "cargadgetd_internal_aoa_restart");
+    bind(g.logText, "cargadgetd_internal_log_text");
+    bind(g.logClear, "cargadgetd_internal_log_clear");
+    bind(g.certsReady, "cargadgetd_internal_certs_ready");
+    bind(g.certsProbe, "cargadgetd_internal_certs_probe");
+    bind(g.certsDownload, "cargadgetd_internal_certs_download");
+    bind(g.certsInstall, "cargadgetd_internal_certs_install");
+    bind(g.onboardingDone, "cargadgetd_internal_onboarding_done");
+    bind(g.addonsPresent, "cargadgetd_internal_addons_present");
+    bind(g.addonsFetch, "cargadgetd_internal_addons_fetch");
+    bind(g.addonsRefresh, "cargadgetd_internal_addons_refresh");
+    bind(g.addonsCount, "cargadgetd_internal_addons_count");
+    bind(g.addonsGroup, "cargadgetd_internal_addons_group");
+    bind(g.addonsTitle, "cargadgetd_internal_addons_title");
+    bind(g.addonsDescription, "cargadgetd_internal_addons_description");
+    bind(g.addonsIcon, "cargadgetd_internal_addons_icon");
+    bind(g.addonsInstalled, "cargadgetd_internal_addons_installed");
+    bind(g.addonsUpdate, "cargadgetd_internal_addons_update");
+    bind(g.addonsUrl, "cargadgetd_internal_addons_url");
+    bind(g.apkStart, "cargadgetd_internal_apk_start");
+    bind(g.apkList, "cargadgetd_internal_apk_list");
+    bind(g.apkName, "cargadgetd_internal_apk_name");
+    bind(g.apkPath, "cargadgetd_internal_apk_path");
+    bind(g.apkDir, "cargadgetd_internal_apk_dir");
+    bind(g.benchStart, "cargadgetd_internal_bench_start");
+    bind(g.benchRunning, "cargadgetd_internal_bench_running");
+    bind(g.benchStatus, "cargadgetd_internal_bench_status");
+    bind(g.benchResult, "cargadgetd_internal_bench_result");
+    bind(g.benchWatch, "cargadgetd_internal_bench_watch");
+    bind(g.benchClear, "cargadgetd_internal_bench_clear");
+    bind(g.encoderCount, "cargadgetd_internal_encoder_count");
+    bind(g.encoderId, "cargadgetd_internal_encoder_id");
+    bind(g.encoderTitle, "cargadgetd_internal_encoder_title");
+    bind(g.transportCount, "cargadgetd_internal_transport_count");
+    bind(g.transportId, "cargadgetd_internal_transport_id");
+    bind(g.transportTitle, "cargadgetd_internal_transport_title");
+    bind(g.transportBody, "cargadgetd_internal_transport_body");
+    bind(g.transportHint, "cargadgetd_internal_transport_hint");
+    bind(g.transportNeedsPeer, "cargadgetd_internal_transport_needs_peer");
+    bind(g.transportRequirePeer, "cargadgetd_internal_transport_require_peer");
 }
 
-static QString yamlUnquote(QString v)
+QString takeCString(char *p)
 {
-    v = v.trimmed();
-    if (v.size() >= 2
-        && ((v.startsWith(QLatin1Char('"')) && v.endsWith(QLatin1Char('"')))
-            || (v.startsWith(QLatin1Char('\'')) && v.endsWith(QLatin1Char('\'')))))
-        return v.mid(1, v.size() - 2);
-    return v;
-}
-
-static QString yamlStr(const QString &s)
-{
-    QString t = s;
-    t.replace(QLatin1Char('\\'), QLatin1String("\\\\"));
-    t.replace(QLatin1Char('"'), QLatin1String("\\\""));
-    return QLatin1Char('"') + t + QLatin1Char('"');
-}
-
-static QString yamlBool(bool v)
-{
-    return v ? QStringLiteral("true") : QStringLiteral("false");
-}
-
-static int lineIndent(const QString &line)
-{
-    int i = 0;
-    while (i < line.size()
-           && (line.at(i) == QLatin1Char(' ') || line.at(i) == QLatin1Char('\t')))
-        ++i;
-    return i;
-}
-
-static QString lineKey(const QString &line, int *indentOut)
-{
-    const QString stripped = stripComment(line);
-    const int indent = lineIndent(stripped);
-    if (indentOut)
-        *indentOut = indent;
-    const QString rest = stripped.mid(indent).trimmed();
-    if (rest.isEmpty())
+    if (!p)
         return QString();
-    const int c = rest.indexOf(QLatin1Char(':'));
-    if (c <= 0)
-        return QString();
-    return rest.left(c).trimmed();
+    const QString s = QString::fromUtf8(p);
+    free(p);
+    return s;
 }
 
-static QString lineValue(const QString &line)
+QVariantList loadEncoders()
 {
-    const QString stripped = stripComment(line);
-    const int indent = lineIndent(stripped);
-    const QString rest = stripped.mid(indent).trimmed();
-    const int c = rest.indexOf(QLatin1Char(':'));
-    if (c < 0)
-        return QString();
-    return yamlUnquote(rest.mid(c + 1));
-}
-
-using YamlDoc = QMap<QString, QMap<QString, QString>>;
-
-static YamlDoc parseYamlSections(QString text)
-{
-    YamlDoc doc;
-    text.replace(QLatin1String("\r\n"), QLatin1String("\n"));
-    QString section;
-    const QStringList lines = text.split(QLatin1Char('\n'));
-    for (int i = 0; i < lines.size(); ++i) {
-        int indent = 0;
-        const QString key = lineKey(lines.at(i), &indent);
-        if (key.isEmpty())
-            continue;
-        if (indent == 0) {
-            section = key;
-            continue;
-        }
-        if (section.isEmpty())
-            continue;
-        doc[section][key] = lineValue(lines.at(i));
+    QVariantList out;
+    if (!g.encoderCount || !g.encoderId || !g.encoderTitle)
+        return out;
+    const int n = g.encoderCount();
+    for (int i = 0; i < n; ++i) {
+        QVariantMap row;
+        row.insert(QStringLiteral("id"), takeCString(g.encoderId(i)));
+        row.insert(QStringLiteral("title"), takeCString(g.encoderTitle(i)));
+        out.append(row);
     }
-    return doc;
+    return out;
 }
 
-static bool yamlToBool(const QString &v, bool def)
+QVariantList loadTransports()
 {
-    const QString s = v.trimmed().toLower();
-    if (s == QLatin1String("true") || s == QLatin1String("yes") || s == QLatin1String("1")
-        || s == QLatin1String("on"))
-        return true;
-    if (s == QLatin1String("false") || s == QLatin1String("no") || s == QLatin1String("0")
-        || s == QLatin1String("off"))
+    QVariantList out;
+    if (!g.transportCount || !g.transportId || !g.transportTitle || !g.transportBody
+        || !g.transportHint || !g.transportNeedsPeer || !g.transportRequirePeer)
+        return out;
+    const int n = g.transportCount();
+    for (int i = 0; i < n; ++i) {
+        QVariantMap row;
+        row.insert(QStringLiteral("id"), takeCString(g.transportId(i)));
+        row.insert(QStringLiteral("title"), takeCString(g.transportTitle(i)));
+        row.insert(QStringLiteral("body"), takeCString(g.transportBody(i)));
+        row.insert(QStringLiteral("hint"), takeCString(g.transportHint(i)));
+        row.insert(QStringLiteral("needsPeer"), g.transportNeedsPeer(i) != 0);
+        row.insert(QStringLiteral("requirePeer"), g.transportRequirePeer(i) != 0);
+        out.append(row);
+    }
+    return out;
+}
+
+QString call0(char *(*fn)())
+{
+    if (!fn)
+        return g.error.isEmpty() ? QStringLiteral("libcargadgetdcontrol.so is missing") : g.error;
+    return takeCString(fn());
+}
+
+bool callBool(int (*fn)())
+{
+    if (!fn)
         return false;
-    return def;
-}
-
-static bool yamlToInt(const QString &v, int *out)
-{
-    bool ok = false;
-    const int n = v.trimmed().toInt(&ok);
-    if (!ok)
-        return false;
-    *out = n;
-    return true;
-}
-
-static bool replaceYamlSectionKey(QString &text, const QString &section, const QString &key,
-                                  const QString &value)
-{
-    text.replace(QLatin1String("\r\n"), QLatin1String("\n"));
-    QStringList lines = text.split(QLatin1Char('\n'));
-    bool in = false;
-    int lastInSection = -1;
-    for (int i = 0; i < lines.size(); ++i) {
-        int indent = 0;
-        const QString k = lineKey(lines.at(i), &indent);
-        if (k.isEmpty()) {
-            if (in)
-                lastInSection = i;
-            continue;
-        }
-        if (indent == 0) {
-            if (in)
-                break;
-            if (k == section) {
-                in = true;
-                lastInSection = i;
-            }
-            continue;
-        }
-        if (in) {
-            lastInSection = i;
-            if (k == key) {
-                const int ind = qMax(lineIndent(lines.at(i)), 2);
-                lines[i] = QString(ind, QLatin1Char(' ')) + key + QLatin1String(": ") + value;
-                text = lines.join(QLatin1Char('\n'));
-                return true;
-            }
-        }
-    }
-    if (in) {
-        lines.insert(lastInSection + 1, QStringLiteral("  ") + key + QLatin1String(": ") + value);
-        text = lines.join(QLatin1Char('\n'));
-        return true;
-    }
-    if (!text.isEmpty() && !text.endsWith(QLatin1Char('\n')))
-        text += QLatin1Char('\n');
-    text += section + QLatin1String(":\n  ") + key + QLatin1String(": ") + value + QLatin1Char('\n');
-    return true;
-}
-
-static QString readFileUtf8(const QString &path)
-{
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
-        return QString();
-    return QString::fromUtf8(f.readAll());
+    return fn() != 0;
 }
 } // namespace
 
 DaemonController::DaemonController(QObject *parent)
     : QObject(parent)
 {
-    loadSettings();
+    loadLib();
+    m_encoders = loadEncoders();
+    m_transports = loadTransports();
     connect(&m_poll, &QTimer::timeout, this, &DaemonController::refresh);
     m_poll.start(1500);
     refresh();
     refreshLog();
+    if (!g.handle && m_statusText.isEmpty())
+        setStatusText(g.error);
 }
 
-void DaemonController::applyYamlText(const QString &text)
+void DaemonController::refresh()
 {
-    if (text.trimmed().isEmpty())
-        return;
-    const YamlDoc doc = parseYamlSections(text);
-    const QMap<QString, QString> daemon = doc.value(QStringLiteral("daemon"));
-    const QMap<QString, QString> video = doc.value(QStringLiteral("video"));
-    const QMap<QString, QString> audio = doc.value(QStringLiteral("audio"));
-    const QMap<QString, QString> usb = doc.value(QStringLiteral("usb"));
-    const QMap<QString, QString> gadget = doc.value(QStringLiteral("gadget"));
-    const QMap<QString, QString> apps = doc.value(QStringLiteral("apps"));
-    const QMap<QString, QString> shell = doc.value(QStringLiteral("shell"));
-    const QMap<QString, QString> music = doc.value(QStringLiteral("music"));
+    setRunning(callBool(g.mdRunning));
+    setFfsReady(callBool(g.ffsReady));
+    setAoaRunning(callBool(g.aoaRunning));
 
-    if (daemon.contains(QStringLiteral("listen")))
-        m_listenUrl = daemon.value(QStringLiteral("listen"));
-    if (daemon.contains(QStringLiteral("control")))
-        m_controlUrl = daemon.value(QStringLiteral("control"));
-    if (daemon.contains(QStringLiteral("certs")))
-        m_certsDir = resolveCertsPath(daemon.value(QStringLiteral("certs")));
-
-    if (video.contains(QStringLiteral("encoder")))
-        m_encoder = video.value(QStringLiteral("encoder"));
-    if (video.contains(QStringLiteral("size"))) {
-        const QString n = video.value(QStringLiteral("size")).trimmed();
-        if (!n.isEmpty())
-            m_videoSize = n;
-    }
-    int n = 0;
-    if (video.contains(QStringLiteral("config_index"))
-        && yamlToInt(video.value(QStringLiteral("config_index")), &n))
-        m_videoConfigIndex = clampInt(n, -1, 32);
-    if (video.contains(QStringLiteral("frame_ms"))
-        && yamlToInt(video.value(QStringLiteral("frame_ms")), &n)) {
-        if (n > 0)
-            m_frameMs = clampInt(n, 16, 200);
-    }
-    if (video.contains(QStringLiteral("live")))
-        m_videoLive = yamlToBool(video.value(QStringLiteral("live")), m_videoLive);
-
-    if (audio.contains(QStringLiteral("enabled")))
-        m_audioEnabled = yamlToBool(audio.value(QStringLiteral("enabled")), m_audioEnabled);
-    if (audio.contains(QStringLiteral("force_prime")))
-        m_audioForcePrime = yamlToBool(audio.value(QStringLiteral("force_prime")), m_audioForcePrime);
-    if (audio.contains(QStringLiteral("tick_ms"))
-        && yamlToInt(audio.value(QStringLiteral("tick_ms")), &n))
-        m_audioTickMs = clampInt(n, 0, 1000);
-    if (audio.contains(QStringLiteral("channels"))
-        && yamlToInt(audio.value(QStringLiteral("channels")), &n)) {
-        if (n == 0 || n == 1 || n == 2)
-            m_audioChannels = n;
-    }
-    if (audio.contains(QStringLiteral("config_index"))
-        && yamlToInt(audio.value(QStringLiteral("config_index")), &n))
-        m_audioConfigIndex = clampInt(n, -1, 32);
-    if (audio.contains(QStringLiteral("type"))) {
-        const QString t = audio.value(QStringLiteral("type")).trimmed().toLower();
-        if (t == QLatin1String("media") || t == QLatin1String("system") || t == QLatin1String("speech")
-            || t == QLatin1String("auto"))
-            m_audioType = t;
+    const bool missing = !callBool(g.certsReady);
+    if (m_certsMissing != missing) {
+        m_certsMissing = missing;
+        emit certsMissingChanged();
+        if (missing)
+            setCertProbe(call0(g.certsProbe));
+        else if (m_certProbeText.startsWith(QLatin1String("Certificate is missing")))
+            setCertProbe(QString());
+    } else if (missing && m_certProbeText.isEmpty()) {
+        setCertProbe(call0(g.certsProbe));
     }
 
-    if (usb.contains(QStringLiteral("media_gap_ms"))
-        && yamlToInt(usb.value(QStringLiteral("media_gap_ms")), &n))
-        m_usbMediaGapMs = clampInt(n, 0, 100);
-    if (usb.contains(QStringLiteral("pcm_dump")))
-        m_usbPcmDump = usb.value(QStringLiteral("pcm_dump"));
-    if (usb.contains(QStringLiteral("ffs_diag")))
-        m_usbFfsDiag = usb.value(QStringLiteral("ffs_diag"));
-
-    if (gadget.contains(QStringLiteral("path"))) {
-        const QString p = gadget.value(QStringLiteral("path")).trimmed();
-        if (!p.isEmpty())
-            m_gadgetConfigfs = p;
+    const bool done = callBool(g.onboardingDone);
+    if (m_onboardingDone != done) {
+        m_onboardingDone = done;
+        emit onboardingDoneChanged();
     }
-    if (gadget.contains(QStringLiteral("bin")))
-        m_gadgetBin = gadget.value(QStringLiteral("bin"));
-
-    if (shell.contains(QStringLiteral("id"))) {
-        const QString id = shell.value(QStringLiteral("id")).trimmed();
-        m_shellId = id.isEmpty() ? QStringLiteral("basic") : id;
-    }
-
-    if (apps.contains(QStringLiteral("strict")))
-        m_appsStrict = yamlToBool(apps.value(QStringLiteral("strict")), m_appsStrict);
-    if (apps.contains(QStringLiteral("unhandled_log")))
-        m_appsUnhandledLog = apps.value(QStringLiteral("unhandled_log"));
-
-    if (music.contains(QStringLiteral("loopback")))
-        m_musicLoopback = yamlToBool(music.value(QStringLiteral("loopback")), m_musicLoopback);
-    if (music.contains(QStringLiteral("sink")))
-        m_musicSink = music.value(QStringLiteral("sink"));
-}
-
-void DaemonController::reloadYaml()
-{
-    loadSettings();
-    emit settingsChanged();
-}
-
-void DaemonController::loadSettings()
-{
-    QSettings s(kSettingsOrg, kSettingsApp);
-    const QString home = QDir::homePath();
-    m_binaryPath = s.value(QStringLiteral("binaryPath"), QString::fromUtf8(kPackagedMd)).toString();
-    if (m_binaryPath.contains(QLatin1String("linux-arm64"))
-        && QFileInfo::exists(QString::fromUtf8(kPackagedMd))) {
-        m_binaryPath = QString::fromUtf8(kPackagedMd);
-    }
-    m_gadgetPath = s.value(QStringLiteral("gadgetPath"), QString::fromUtf8(kPackagedGadget)).toString();
-    if (m_gadgetPath.contains(QLatin1String("linux-arm64"))
-        && QFileInfo::exists(QString::fromUtf8(kPackagedGadget))) {
-        m_gadgetPath = QString::fromUtf8(kPackagedGadget);
-    }
-    m_logPath = s.value(QStringLiteral("logPath"),
-                        home + QStringLiteral("/cargadgetd.log")).toString();
-    if (m_logPath.endsWith(QStringLiteral("cargadgetd-usb.log")))
-        m_logPath = home + QStringLiteral("/cargadgetd.log");
-
-    // User YAML wins. /usr/share/cargadgetd/config.yaml is an optional overlay.
-    applyYamlText(readFileUtf8(QString::fromUtf8(kPackagedConfig)));
-    const QString userPath = daemonConfigPath();
-    const bool haveUser = QFileInfo::exists(userPath);
-    if (haveUser)
-        applyYamlText(readFileUtf8(userPath));
-    else {
-        // Migrate pre-YAML QSettings knobs once if the user file is not there yet.
-        if (s.contains(QStringLiteral("listenUrl")))
-            m_listenUrl = s.value(QStringLiteral("listenUrl")).toString();
-        if (s.contains(QStringLiteral("fps"))) {
-            const int fps = s.value(QStringLiteral("fps")).toInt();
-            if (fps >= 1) {
-                int ms = (1000 + fps / 2) / fps;
-                if (ms < 16)
-                    ms = 16;
-                m_frameMs = clampInt(ms, 16, 200);
-            }
-        }
-        if (s.contains(QStringLiteral("noAudio")))
-            m_audioEnabled = !s.value(QStringLiteral("noAudio")).toBool();
-        if (s.contains(QStringLiteral("noLive")))
-            m_videoLive = !s.value(QStringLiteral("noLive")).toBool();
-        if (s.contains(QStringLiteral("audioForcePrime")))
-            m_audioForcePrime = s.value(QStringLiteral("audioForcePrime")).toBool();
-        if (s.contains(QStringLiteral("videoSize")))
-            m_videoSize = s.value(QStringLiteral("videoSize")).toString();
-    }
-
-    if (m_listenUrl.trimmed().isEmpty())
-        m_listenUrl = QString::fromUtf8(kFfsListen);
-    if (m_videoSize.trimmed().isEmpty())
-        m_videoSize = QStringLiteral("auto");
-    if (m_audioType.trimmed().isEmpty())
-        m_audioType = QStringLiteral("auto");
-}
-
-void DaemonController::saveSettings() const
-{
-    QSettings s(kSettingsOrg, kSettingsApp);
-    s.setValue(QStringLiteral("binaryPath"), m_binaryPath);
-    s.setValue(QStringLiteral("gadgetPath"), m_gadgetPath);
-    s.setValue(QStringLiteral("logPath"), m_logPath);
-    writeDaemonConfig();
-}
-
-void DaemonController::commit()
-{
-    saveSettings();
-    emit settingsChanged();
-}
-
-QString DaemonController::mdListenArg() const
-{
-    const QString u = m_listenUrl.trimmed();
-    if (u.isEmpty())
-        return QString::fromUtf8(kFfsListen);
-    return u;
-}
-
-QString DaemonController::resolveCertsPath(const QString &v) const
-{
-    const QString n = v.trimmed();
-    if (n.isEmpty()
-        || n.compare(QLatin1String("embedded"), Qt::CaseInsensitive) == 0
-        || n.compare(QLatin1String("reversegearhead"), Qt::CaseInsensitive) == 0)
-        return QString::fromUtf8(kDefaultCerts);
-    return n;
-}
-
-void DaemonController::setBinaryPath(const QString &v)
-{
-    if (m_binaryPath == v)
-        return;
-    m_binaryPath = v;
-    commit();
-}
-
-void DaemonController::setGadgetPath(const QString &v)
-{
-    if (m_gadgetPath == v)
-        return;
-    m_gadgetPath = v;
-    commit();
-}
-
-void DaemonController::setLogPath(const QString &v)
-{
-    if (m_logPath == v)
-        return;
-    m_logPath = v;
-    commit();
-    refreshLog();
-}
-
-void DaemonController::setListenUrl(const QString &v)
-{
-    if (m_listenUrl == v)
-        return;
-    m_listenUrl = v;
-    commit();
-}
-
-void DaemonController::setControlUrl(const QString &v)
-{
-    const QString n = v.trimmed();
-    if (m_controlUrl == n)
-        return;
-    m_controlUrl = n;
-    commit();
-}
-
-void DaemonController::setCertsDir(const QString &v)
-{
-    const QString n = resolveCertsPath(v);
-    if (m_certsDir == n)
-        return;
-    m_certsDir = n;
-    commit();
-}
-
-void DaemonController::setEncoder(const QString &v)
-{
-    QString n = v.trimmed().toLower();
-    if (n == QLatin1String("software"))
-        n = QStringLiteral("software");
-    else
-        n = QStringLiteral("droidmedia");
-    if (m_encoder == n)
-        return;
-    m_encoder = n;
-    commit();
-}
-
-void DaemonController::setVideoSize(const QString &v)
-{
-    QString n = v.trimmed();
-    QRegExp wxh(QStringLiteral("^\\d+x\\d+$"));
-    if (n.isEmpty() || n == QLatin1String("auto"))
-        n = QStringLiteral("auto");
-    else if (!wxh.exactMatch(n))
-        n = QStringLiteral("auto");
-    if (m_videoSize == n)
-        return;
-    m_videoSize = n;
-    commit();
-}
-
-void DaemonController::setVideoConfigIndex(int v)
-{
-    v = clampInt(v, -1, 32);
-    if (m_videoConfigIndex == v)
-        return;
-    m_videoConfigIndex = v;
-    commit();
-}
-
-void DaemonController::setFrameMs(int v)
-{
-    v = clampInt(v, 16, 200);
-    if (m_frameMs == v)
-        return;
-    m_frameMs = v;
-    commit();
-}
-
-int DaemonController::fps() const
-{
-    if (m_frameMs <= 0)
-        return 30;
-    return (1000 + m_frameMs / 2) / m_frameMs;
-}
-
-void DaemonController::setVideoLive(bool v)
-{
-    if (m_videoLive == v)
-        return;
-    m_videoLive = v;
-    commit();
-}
-
-void DaemonController::setAudioEnabled(bool v)
-{
-    if (m_audioEnabled == v)
-        return;
-    m_audioEnabled = v;
-    commit();
-}
-
-void DaemonController::setAudioForcePrime(bool v)
-{
-    if (m_audioForcePrime == v)
-        return;
-    m_audioForcePrime = v;
-    commit();
-}
-
-void DaemonController::setAudioTickMs(int v)
-{
-    v = clampInt(v, 0, 1000);
-    if (m_audioTickMs == v)
-        return;
-    m_audioTickMs = v;
-    commit();
-}
-
-void DaemonController::setAudioChannels(int v)
-{
-    if (v != 0 && v != 1 && v != 2)
-        v = 0;
-    if (m_audioChannels == v)
-        return;
-    m_audioChannels = v;
-    commit();
-}
-
-void DaemonController::setAudioConfigIndex(int v)
-{
-    v = clampInt(v, -1, 32);
-    if (m_audioConfigIndex == v)
-        return;
-    m_audioConfigIndex = v;
-    commit();
-}
-
-void DaemonController::setAudioType(const QString &v)
-{
-    QString n = v.trimmed().toLower();
-    if (n != QLatin1String("media") && n != QLatin1String("system") && n != QLatin1String("speech"))
-        n = QStringLiteral("auto");
-    if (m_audioType == n)
-        return;
-    m_audioType = n;
-    commit();
-}
-
-void DaemonController::setUsbMediaGapMs(int v)
-{
-    v = clampInt(v, 0, 100);
-    if (m_usbMediaGapMs == v)
-        return;
-    m_usbMediaGapMs = v;
-    commit();
-}
-
-void DaemonController::setUsbPcmDump(const QString &v)
-{
-    const QString n = v.trimmed();
-    if (m_usbPcmDump == n)
-        return;
-    m_usbPcmDump = n;
-    commit();
-}
-
-void DaemonController::setUsbFfsDiag(const QString &v)
-{
-    const QString n = v.trimmed();
-    if (m_usbFfsDiag == n)
-        return;
-    m_usbFfsDiag = n;
-    commit();
-}
-
-void DaemonController::setGadgetConfigfs(const QString &v)
-{
-    QString n = v.trimmed();
-    if (n.isEmpty())
-        n = QStringLiteral("/sys/kernel/config/usb_gadget/aa");
-    if (m_gadgetConfigfs == n)
-        return;
-    m_gadgetConfigfs = n;
-    commit();
-}
-
-void DaemonController::setGadgetBin(const QString &v)
-{
-    const QString n = v.trimmed();
-    if (m_gadgetBin == n)
-        return;
-    m_gadgetBin = n;
-    commit();
-}
-
-void DaemonController::setShellId(const QString &v)
-{
-    QString n = v.trimmed();
-    if (n.isEmpty())
-        n = QStringLiteral("basic");
-    if (m_shellId == n)
-        return;
-    m_shellId = n;
-    commit();
-}
-
-void DaemonController::setAppsStrict(bool v)
-{
-    if (m_appsStrict == v)
-        return;
-    m_appsStrict = v;
-    commit();
-}
-
-void DaemonController::setAppsUnhandledLog(const QString &v)
-{
-    const QString n = v.trimmed();
-    if (m_appsUnhandledLog == n)
-        return;
-    m_appsUnhandledLog = n;
-    commit();
-}
-
-void DaemonController::setMusicLoopback(bool v)
-{
-    if (m_musicLoopback == v)
-        return;
-    m_musicLoopback = v;
-    commit();
-}
-
-void DaemonController::setMusicSink(const QString &v)
-{
-    const QString n = v.trimmed();
-    if (m_musicSink == n)
-        return;
-    m_musicSink = n;
-    commit();
-}
-
-QString DaemonController::expandHome(const QString &path) const
-{
-    if (path.startsWith(QLatin1String("~/")))
-        return QDir::homePath() + path.mid(1);
-    if (path == QLatin1String("~"))
-        return QDir::homePath();
-    return path;
-}
-
-QString DaemonController::daemonConfigPath() const
-{
-    return QDir::homePath() + QStringLiteral("/.config/cargadgetd/config.yaml");
-}
-
-bool DaemonController::writeDaemonConfig() const
-{
-    const QString path = daemonConfigPath();
-    if (!QDir().mkpath(QFileInfo(path).absolutePath()))
-        return false;
-
-    QString text = readFileUtf8(path);
-    if (text.trimmed().isEmpty())
-        text = readFileUtf8(QString::fromUtf8(kPackagedConfig));
-    if (text.trimmed().isEmpty()) {
-        text = QStringLiteral(
-            "daemon:\nvideo:\naudio:\nusb:\ngadget:\nshell:\napps:\nmusic:\n");
-    }
-
-    replaceYamlSectionKey(text, QStringLiteral("daemon"), QStringLiteral("listen"), yamlStr(m_listenUrl));
-    replaceYamlSectionKey(text, QStringLiteral("daemon"), QStringLiteral("control"), yamlStr(m_controlUrl));
-    replaceYamlSectionKey(text, QStringLiteral("daemon"), QStringLiteral("certs"), yamlStr(m_certsDir));
-
-    replaceYamlSectionKey(text, QStringLiteral("video"), QStringLiteral("encoder"), yamlStr(m_encoder));
-    replaceYamlSectionKey(text, QStringLiteral("video"), QStringLiteral("size"), yamlStr(m_videoSize));
-    replaceYamlSectionKey(text, QStringLiteral("video"), QStringLiteral("config_index"),
-                          QString::number(m_videoConfigIndex));
-    replaceYamlSectionKey(text, QStringLiteral("video"), QStringLiteral("frame_ms"),
-                          QString::number(m_frameMs));
-    replaceYamlSectionKey(text, QStringLiteral("video"), QStringLiteral("live"), yamlBool(m_videoLive));
-
-    replaceYamlSectionKey(text, QStringLiteral("audio"), QStringLiteral("enabled"), yamlBool(m_audioEnabled));
-    replaceYamlSectionKey(text, QStringLiteral("audio"), QStringLiteral("force_prime"),
-                          yamlBool(m_audioForcePrime));
-    replaceYamlSectionKey(text, QStringLiteral("audio"), QStringLiteral("tick_ms"),
-                          QString::number(m_audioTickMs));
-    replaceYamlSectionKey(text, QStringLiteral("audio"), QStringLiteral("channels"),
-                          QString::number(m_audioChannels));
-    replaceYamlSectionKey(text, QStringLiteral("audio"), QStringLiteral("config_index"),
-                          QString::number(m_audioConfigIndex));
-    replaceYamlSectionKey(text, QStringLiteral("audio"), QStringLiteral("type"), yamlStr(m_audioType));
-
-    replaceYamlSectionKey(text, QStringLiteral("usb"), QStringLiteral("media_gap_ms"),
-                          QString::number(m_usbMediaGapMs));
-    replaceYamlSectionKey(text, QStringLiteral("usb"), QStringLiteral("pcm_dump"), yamlStr(m_usbPcmDump));
-    replaceYamlSectionKey(text, QStringLiteral("usb"), QStringLiteral("ffs_diag"), yamlStr(m_usbFfsDiag));
-
-    replaceYamlSectionKey(text, QStringLiteral("gadget"), QStringLiteral("path"), yamlStr(m_gadgetConfigfs));
-    replaceYamlSectionKey(text, QStringLiteral("gadget"), QStringLiteral("bin"), yamlStr(m_gadgetBin));
-
-    replaceYamlSectionKey(text, QStringLiteral("shell"), QStringLiteral("id"), yamlStr(m_shellId));
-
-    replaceYamlSectionKey(text, QStringLiteral("apps"), QStringLiteral("strict"), yamlBool(m_appsStrict));
-    replaceYamlSectionKey(text, QStringLiteral("apps"), QStringLiteral("unhandled_log"), yamlStr(m_appsUnhandledLog));
-
-    replaceYamlSectionKey(text, QStringLiteral("music"), QStringLiteral("loopback"), yamlBool(m_musicLoopback));
-    replaceYamlSectionKey(text, QStringLiteral("music"), QStringLiteral("sink"), yamlStr(m_musicSink));
-
-    QFile::remove(QDir::homePath() + QStringLiteral("/.config/cargadgetd/ui.yaml"));
-
-    QFile out(path);
-    if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
-        return false;
-    const QByteArray bytes = text.toUtf8();
-    return out.write(bytes) == bytes.size();
-}
-
-QString DaemonController::mdProcPattern() const
-{
-    const QString base = QFileInfo(expandHome(m_binaryPath)).fileName();
-    const QString name = base.isEmpty() ? QStringLiteral("cargadgetd-md") : base;
-    return QStringLiteral("(^|/| )%1( |$)").arg(QRegExp::escape(name));
-}
-
-QString DaemonController::gadgetProcPattern() const
-{
-    const QString base = QFileInfo(expandHome(m_gadgetPath)).fileName();
-    const QString name = base.isEmpty() ? QStringLiteral("cargadgetd-gadget") : base;
-    return QStringLiteral("(^|/| )%1( |$)").arg(QRegExp::escape(name));
-}
-
-bool DaemonController::processMatches(const QString &pattern) const
-{
-    QProcess p;
-    p.start(QStringLiteral("pgrep"), QStringList() << QStringLiteral("-f") << pattern);
-    if (!p.waitForFinished(2000)) {
-        p.kill();
-        return false;
-    }
-    return p.exitCode() == 0 && !QString::fromUtf8(p.readAllStandardOutput()).trimmed().isEmpty();
-}
-
-void DaemonController::killMatchingUser(const QString &pattern)
-{
-    QProcess::execute(QStringLiteral("pkill"), QStringList() << QStringLiteral("-f") << pattern);
-    for (int i = 0; i < 50; ++i) {
-        if (!processMatches(pattern))
-            break;
-        QProcess::execute(QStringLiteral("sleep"), QStringList() << QStringLiteral("0.1"));
-    }
-    if (processMatches(pattern)) {
-        QProcess::execute(QStringLiteral("pkill"),
-                          QStringList() << QStringLiteral("-9") << QStringLiteral("-f") << pattern);
-        QProcess::execute(QStringLiteral("sleep"), QStringList() << QStringLiteral("0.2"));
-    }
-}
-
-bool DaemonController::gadgetIsSetuid(const QString &bin) const
-{
-    struct stat st;
-    if (stat(bin.toLocal8Bit().constData(), &st) != 0)
-        return false;
-    return (st.st_mode & S_ISUID) != 0 && st.st_uid == 0;
 }
 
 void DaemonController::setBusy(bool v)
@@ -807,14 +245,6 @@ void DaemonController::setRunning(bool v)
         return;
     m_running = v;
     emit runningChanged();
-}
-
-void DaemonController::setGadgetRunning(bool v)
-{
-    if (m_gadgetRunning == v)
-        return;
-    m_gadgetRunning = v;
-    emit gadgetRunningChanged();
 }
 
 void DaemonController::setFfsReady(bool v)
@@ -841,6 +271,38 @@ void DaemonController::setStatusText(const QString &v)
     emit statusTextChanged();
 }
 
+void DaemonController::setCertMessage(const QString &v)
+{
+    if (m_certMessage == v)
+        return;
+    m_certMessage = v;
+    emit certMessageChanged();
+}
+
+void DaemonController::setCertProbe(const QString &v)
+{
+    if (m_certProbeText == v)
+        return;
+    m_certProbeText = v;
+    emit certProbeTextChanged();
+}
+
+void DaemonController::setAddonsError(const QString &v)
+{
+    if (m_addonsError == v)
+        return;
+    m_addonsError = v;
+    emit addonsErrorChanged();
+}
+
+void DaemonController::setAddonsLoading(bool v)
+{
+    if (m_addonsLoading == v)
+        return;
+    m_addonsLoading = v;
+    emit addonsLoadingChanged();
+}
+
 void DaemonController::runAsync(const QString &busyMsg, const std::function<QString()> &work)
 {
     if (m_busy) {
@@ -864,367 +326,265 @@ void DaemonController::finishAsync(const QString &status)
     setStatusText(status);
 }
 
-bool DaemonController::waitForFfs(int tries) const
-{
-    for (int i = 0; i < tries; ++i) {
-        if (QFileInfo::exists(QString::fromUtf8(kFfsEp1)))
-            return true;
-        QProcess::execute(QStringLiteral("sleep"), QStringList() << QStringLiteral("0.25"));
-    }
-    return QFileInfo::exists(QString::fromUtf8(kFfsEp1));
-}
-
-QString DaemonController::sharedLogPath() const
-{
-    return expandHome(m_logPath);
-}
-
-QString DaemonController::rotateSharedLog() const
-{
-    const QString path = sharedLogPath();
-    const QFileInfo fi(path);
-    QDir().mkpath(fi.absolutePath());
-    QString archived;
-    if (fi.exists() && fi.size() > 0) {
-        const QString ts = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss"));
-        QString stem = path;
-        if (stem.endsWith(QStringLiteral(".log")))
-            stem.chop(4);
-        QString dest = stem + QLatin1Char('-') + ts + QStringLiteral(".log");
-        for (int n = 1; QFileInfo::exists(dest) && n < 100; ++n)
-            dest = stem + QLatin1Char('-') + ts + QLatin1Char('-') + QString::number(n) + QStringLiteral(".log");
-        if (QFile::rename(path, dest))
-            archived = dest;
-    }
-    QFile fresh(path);
-    if (fresh.open(QIODevice::WriteOnly | QIODevice::Append))
-        fresh.close();
-
-    const QString prefix = fi.completeBaseName() + QLatin1Char('-');
-    const QFileInfoList old = fi.dir().entryInfoList(QStringList() << (prefix + QStringLiteral("[0-9]*.log")),
-                                                     QDir::Files, QDir::Time);
-    const int keep = 30;
-    for (int i = keep; i < old.size(); ++i)
-        QFile::remove(old.at(i).absoluteFilePath());
-    return archived;
-}
-
-void DaemonController::appendLogBanner(const QString &banner) const
-{
-    QFile f(sharedLogPath());
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text))
-        return;
-    f.write(banner.toUtf8());
-    f.write("\n");
-    f.close();
-}
-
-void DaemonController::refresh()
-{
-    setRunning(processMatches(mdProcPattern()));
-    setGadgetRunning(processMatches(gadgetProcPattern()));
-    setFfsReady(QFileInfo::exists(QString::fromUtf8(kFfsEp1)));
-    setAoaRunning(processMatches(QStringLiteral("usb-aoa-launch")));
-
-    const QString so = resolveCertsPath(m_certsDir);
-    const bool missing = !QFileInfo::exists(so);
-    if (m_certsMissing != missing) {
-        m_certsMissing = missing;
-        emit certsMissingChanged();
-    }
-    if (missing) {
-        const QString msg = QStringLiteral("reversegearhead.so is missing (%1)").arg(so);
-        if (m_certProbeText != msg) {
-            m_certProbeText = msg;
-            emit certProbeTextChanged();
-        }
-    } else if (m_certProbeText.contains(QLatin1String("is missing"))) {
-        m_certProbeText.clear();
-        emit certProbeTextChanged();
-    }
-
-    if (m_busy)
-        return;
-}
-
-QString DaemonController::aoaServiceCtl(const QString &verb)
-{
-    const QString bin = expandHome(m_gadgetPath);
-    if (!QFileInfo::exists(bin))
-        return QStringLiteral("Gadget binary missing: %1").arg(bin);
-    if (!gadgetIsSetuid(bin)) {
-        return QStringLiteral("Gadget needs setuid root (RPM install). Missing setuid on %1")
-            .arg(bin);
-    }
-    QProcess p;
-    p.start(bin, QStringList() << QStringLiteral("-aoa-service") << verb);
-    if (!p.waitForFinished(20000)) {
-        p.kill();
-        return QStringLiteral("Handshake %1 timed out").arg(verb);
-    }
-    const QString err = QString::fromUtf8(p.readAllStandardError()).trimmed();
-    const QString out = QString::fromUtf8(p.readAllStandardOutput()).trimmed();
-    if (p.exitCode() != 0) {
-        return QStringLiteral("Handshake %1 failed: %2")
-            .arg(verb, err.isEmpty() ? QStringLiteral("exit %1").arg(p.exitCode()) : err);
-    }
-    Q_UNUSED(out);
-    if (verb == QLatin1String("stop"))
-        return QStringLiteral("Handshake service stopped");
-    if (verb == QLatin1String("restart"))
-        return QStringLiteral("Handshake service restarted");
-    return QStringLiteral("Handshake service started");
-}
-
 void DaemonController::startAoa()
 {
-    runAsync(QStringLiteral("Starting handshake service…"), [this]() { return aoaServiceCtl(QStringLiteral("start")); });
+    runAsync(QStringLiteral("Starting handshake service…"), []() { return call0(g.aoaStart); });
 }
 
 void DaemonController::stopAoa()
 {
-    runAsync(QStringLiteral("Stopping handshake service…"), [this]() { return aoaServiceCtl(QStringLiteral("stop")); });
+    runAsync(QStringLiteral("Stopping handshake service…"), []() { return call0(g.aoaStop); });
 }
 
 void DaemonController::restartAoa()
 {
-    runAsync(QStringLiteral("Restarting handshake service…"), [this]() { return aoaServiceCtl(QStringLiteral("restart")); });
-}
-
-QString DaemonController::startGadgetWork()
-{
-    return startGadgetWorkInner(true);
-}
-
-QString DaemonController::startGadgetWorkInner(bool clearLog)
-{
-    const QString bin = expandHome(m_gadgetPath);
-    if (!QFileInfo::exists(bin))
-        return QStringLiteral("Gadget binary missing: %1").arg(bin);
-    if (!QFileInfo(bin).isExecutable())
-        return QStringLiteral("Gadget binary not executable: %1").arg(bin);
-    if (!gadgetIsSetuid(bin)) {
-        return QStringLiteral("Gadget needs setuid root (RPM install). Missing setuid on %1")
-            .arg(bin);
-    }
-    if (processMatches(gadgetProcPattern()) && QFileInfo::exists(QString::fromUtf8(kFfsEp1)))
-        return QStringLiteral("Gadget already up");
-
-    // Restart agent if FFS nodes are gone (stale process).
-    {
-        QProcess stop;
-        stop.start(bin, QStringList() << QStringLiteral("-stop"));
-        if (!stop.waitForFinished(30000))
-            stop.kill();
-    }
-
-    const QString log = sharedLogPath();
-    if (clearLog) {
-        const QString archived = rotateSharedLog();
-        if (!archived.isEmpty())
-            appendLogBanner(QStringLiteral("kept previous log as %1").arg(archived));
-    }
-    appendLogBanner(QStringLiteral("=== gadget start ==="));
-    const QString cmd = QStringLiteral("nohup \"%1\" >>\"%2\" 2>&1 & echo $!")
-                            .arg(bin, log);
-
-    QProcess p;
-    p.start(QStringLiteral("/bin/bash"), QStringList() << QStringLiteral("-c") << cmd);
-    if (!p.waitForFinished(5000)) {
-        p.kill();
-        return QStringLiteral("Gadget start timed out");
-    }
-    const QString out = QString::fromUtf8(p.readAllStandardOutput() + p.readAllStandardError()).trimmed();
-    const bool ok = waitForFfs(40);
-    if (ok)
-        return QStringLiteral("Gadget up · FFS ready (pid %1)")
-            .arg(out.isEmpty() ? QStringLiteral("?") : out);
-    return QStringLiteral("Gadget start: no /dev/usb-ffs/aa/ep1 — see log");
-}
-
-QString DaemonController::stopGadgetWork()
-{
-    // MD must die before tearing down FFS or it wedges mid-write.
-    killMatchingUser(mdProcPattern());
-
-    const QString bin = expandHome(m_gadgetPath);
-    if (QFileInfo::exists(bin) && gadgetIsSetuid(bin)) {
-        QProcess stop;
-        stop.start(bin, QStringList() << QStringLiteral("-stop"));
-        if (!stop.waitForFinished(30000)) {
-            stop.kill();
-            return QStringLiteral("Gadget -stop timed out");
-        }
-        if (stop.exitCode() != 0) {
-            const QString err = QString::fromUtf8(stop.readAllStandardError()).trimmed();
-            return QStringLiteral("Gadget -stop failed: %1")
-                .arg(err.isEmpty() ? QStringLiteral("exit %1").arg(stop.exitCode()) : err);
-        }
-    } else {
-        // Best-effort for non-packaged paths (won't kill root agent).
-        killMatchingUser(gadgetProcPattern());
-        if (processMatches(gadgetProcPattern()))
-            return QStringLiteral("Gadget still running (needs setuid -stop)");
-    }
-    return QStringLiteral("Gadget stopped");
-}
-
-QString DaemonController::startDaemonWork()
-{
-    const QString bin = expandHome(m_binaryPath);
-    if (!QFileInfo::exists(bin))
-        return QStringLiteral("MD binary missing: %1").arg(bin);
-    if (!QFileInfo(bin).isExecutable())
-        return QStringLiteral("MD binary not executable: %1").arg(bin);
-    if (!QFileInfo::exists(QString::fromUtf8(kFfsEp1)))
-        return QStringLiteral("FFS not ready — start USB gadget first");
-
-    const QString so = resolveCertsPath(m_certsDir);
-    if (!QFileInfo::exists(so))
-        return QStringLiteral("reversegearhead.so is missing (%1)").arg(so);
-
-    killMatchingUser(mdProcPattern());
-
-    const QString log = sharedLogPath();
-    QDir().mkpath(QFileInfo(log).absolutePath());
-    appendLogBanner(QStringLiteral("=== MD start ==="));
-
-    if (!writeDaemonConfig())
-        return QStringLiteral("Could not write %1").arg(daemonConfigPath());
-
-    const QString cmd = QStringLiteral("nohup \"%1\" -listen \"%2\" >>\"%3\" 2>&1 & echo $!")
-                            .arg(bin, mdListenArg(), log);
-
-    QProcess p;
-    p.setWorkingDirectory(QFileInfo(bin).absolutePath());
-    p.start(QStringLiteral("/bin/bash"), QStringList() << QStringLiteral("-c") << cmd);
-    if (!p.waitForFinished(5000)) {
-        p.kill();
-        return QStringLiteral("MD start timed out");
-    }
-    const QString out = QString::fromUtf8(p.readAllStandardOutput() + p.readAllStandardError()).trimmed();
-    QProcess::execute(QStringLiteral("sleep"), QStringList() << QStringLiteral("0.5"));
-    if (processMatches(mdProcPattern()))
-        return QStringLiteral("MD started (pid %1, %2 fps)")
-            .arg(out.isEmpty() ? QStringLiteral("?") : out)
-            .arg(fps());
-    return QStringLiteral("MD start failed — see log");
-}
-
-QString DaemonController::stopDaemonWork()
-{
-    killMatchingUser(mdProcPattern());
-    return QStringLiteral("MD stopped");
-}
-
-QString DaemonController::startStackWork()
-{
-    const QString archived = rotateSharedLog();
-    if (!archived.isEmpty())
-        appendLogBanner(QStringLiteral("kept previous log as %1").arg(archived));
-    appendLogBanner(QStringLiteral("=== stack start ==="));
-    const QString g = startGadgetWorkInner(false);
-    if (!QFileInfo::exists(QString::fromUtf8(kFfsEp1)))
-        return g;
-    const QString m = startDaemonWork();
-    if (processMatches(mdProcPattern()) && QFileInfo::exists(QString::fromUtf8(kFfsEp1)))
-        return QStringLiteral("Stack up · %1 fps").arg(fps());
-    return m;
-}
-
-QString DaemonController::stopStackWork()
-{
-    killMatchingUser(mdProcPattern());
-    const QString g = stopGadgetWork();
-    if (g != QStringLiteral("Gadget stopped"))
-        return g;
-    return QStringLiteral("Stack stopped");
+    runAsync(QStringLiteral("Restarting handshake service…"), []() { return call0(g.aoaRestart); });
 }
 
 void DaemonController::refreshLog()
 {
-    const QString path = sharedLogPath();
-    QFile f(path);
-    const QFileInfo fi(path);
-    const QString prefix = fi.completeBaseName() + QLatin1Char('-');
-    const QFileInfoList old = fi.dir().entryInfoList(QStringList() << (prefix + QStringLiteral("[0-9]*.log")),
-                                                     QDir::Files, QDir::Time);
-    QStringList names;
-    const int show = qMin(old.size(), 8);
-    for (int i = 0; i < show; ++i)
-        names << old.at(i).fileName();
-    const QString archives = names.join(QStringLiteral("\n"));
-    if (m_logArchives != archives) {
-        m_logArchives = archives;
-    }
-    if (!f.exists()) {
-        m_logText = QStringLiteral("(no log yet: %1)").arg(path);
-        emit logTextChanged();
+    const QString text = call0(g.logText);
+    if (m_logText == text)
         return;
-    }
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        m_logText = QStringLiteral("(cannot read %1: %2)").arg(path, f.errorString());
-        emit logTextChanged();
-        return;
-    }
-    const qint64 size = f.size();
-    const qint64 maxTail = 64 * 1024;
-    if (size > maxTail)
-        f.seek(size - maxTail);
-    QByteArray data = f.readAll();
-    if (size > maxTail) {
-        const int nl = data.indexOf('\n');
-        if (nl >= 0)
-            data = data.mid(nl + 1);
-    }
-    m_logText = QString::fromUtf8(data);
-    if (m_logText.isEmpty())
-        m_logText = QStringLiteral("(log empty)");
+    m_logText = text;
     emit logTextChanged();
-}
-
-void DaemonController::refreshGadgetLog()
-{
-    // Same shared log as MD (kept for older QML menu entries).
-    refreshLog();
 }
 
 void DaemonController::clearLog()
 {
-    rotateSharedLog();
+    if (g.logClear)
+        g.logClear();
     refreshLog();
 }
 
 void DaemonController::probeCerts()
 {
-    const QString text = probeCertsWork();
-    if (m_certProbeText == text)
-        return;
-    m_certProbeText = text;
-    emit certProbeTextChanged();
+    setCertProbe(call0(g.certsProbe));
 }
 
-QString DaemonController::probeCertsWork() const
+void DaemonController::runCertAsync(const QString &busyMsg, const std::function<QString()> &work)
 {
-    const QString so = resolveCertsPath(m_certsDir);
-    if (!QFileInfo::exists(so))
-        return QStringLiteral("reversegearhead.so is missing (%1)").arg(so);
+    if (m_busy) {
+        setCertMessage(QStringLiteral("Busy…"));
+        return;
+    }
+    setBusy(true);
+    setCertMessage(busyMsg);
+    QtConcurrent::run([this, work]() {
+        const QString result = work();
+        QMetaObject::invokeMethod(this, "finishCertAsync", Qt::QueuedConnection,
+                                  Q_ARG(QString, result));
+    });
+}
 
-    void *h = dlopen(qPrintable(so), RTLD_NOW | RTLD_GLOBAL);
-    if (!h) {
-        const char *err = dlerror();
-        return QStringLiteral("reversegearhead.so failed to load (%1): %2")
-            .arg(so, err ? QString::fromLocal8Bit(err) : QStringLiteral("dlopen failed"));
+void DaemonController::finishCertAsync(const QString &status)
+{
+    refresh();
+    const bool ok = status.isEmpty();
+    setCertMessage(ok ? QStringLiteral("Certificate installed") : status);
+    if (ok)
+        probeCerts();
+    setBusy(false);
+    if (ok)
+        emit certInstallFinished();
+}
+
+void DaemonController::downloadCerts()
+{
+    runCertAsync(QStringLiteral("Downloading Android Auto…"), []() { return call0(g.certsDownload); });
+}
+
+void DaemonController::installApk(const QString &path)
+{
+    runCertAsync(QStringLiteral("Reading APK…"), [path]() {
+        if (!g.certsInstall)
+            return g.error.isEmpty() ? QStringLiteral("libcargadgetdcontrol.so is missing") : g.error;
+        const QByteArray p = path.toUtf8();
+        return takeCString(g.certsInstall(p.constData()));
+    });
+}
+
+void DaemonController::completeOnboarding()
+{
+    // Pair page already stored First run through PluginSettings.
+    refresh();
+}
+
+bool DaemonController::hasAddons() const
+{
+    return callBool(g.addonsPresent);
+}
+
+QString DaemonController::apkStartPath() const
+{
+    return call0(g.apkStart);
+}
+
+QVariantList DaemonController::listApkDir(const QString &path) const
+{
+    QVariantList out;
+    if (!g.apkList || !g.apkName || !g.apkPath || !g.apkDir)
+        return out;
+    const QByteArray p = path.toUtf8();
+    const int n = g.apkList(p.constData());
+    for (int i = 0; i < n; ++i) {
+        QVariantMap row;
+        row.insert(QStringLiteral("name"), takeCString(g.apkName(i)));
+        row.insert(QStringLiteral("path"), takeCString(g.apkPath(i)));
+        row.insert(QStringLiteral("dir"), g.apkDir(i) != 0);
+        out.append(row);
     }
-    dlerror();
-    char *(*probe)() = reinterpret_cast<char *(*)()>(dlsym(h, "reversegearhead_probe"));
-    const char *err = dlerror();
-    if (!probe) {
-        return QStringLiteral("reversegearhead.so failed to load (%1): %2")
-            .arg(so, err ? QString::fromLocal8Bit(err) : QStringLiteral("missing reversegearhead_probe"));
+    return out;
+}
+
+void DaemonController::copyAddonRows()
+{
+    QVariantList rows;
+    if (g.addonsCount && g.addonsGroup && g.addonsTitle && g.addonsDescription
+        && g.addonsIcon && g.addonsInstalled && g.addonsUpdate && g.addonsUrl) {
+        const int n = g.addonsCount();
+        for (int i = 0; i < n; ++i) {
+            QVariantMap row;
+            row.insert(QStringLiteral("group"), takeCString(g.addonsGroup(i)));
+            row.insert(QStringLiteral("title"), takeCString(g.addonsTitle(i)));
+            row.insert(QStringLiteral("description"), takeCString(g.addonsDescription(i)));
+            row.insert(QStringLiteral("icon"), takeCString(g.addonsIcon(i)));
+            row.insert(QStringLiteral("installed"), g.addonsInstalled(i) != 0);
+            row.insert(QStringLiteral("hasUpdate"), g.addonsUpdate(i) != 0);
+            row.insert(QStringLiteral("url"), takeCString(g.addonsUrl(i)));
+            rows.append(row);
+        }
     }
-    const char *text = probe();
-    if (!text || !text[0])
-        return QStringLiteral("(reversegearhead_probe returned empty)");
-    return QString::fromUtf8(text);
+    m_addonRows = rows;
+    emit addonRowsChanged();
+}
+
+void DaemonController::loadAddons()
+{
+    if (m_addonsLoading)
+        return;
+    setAddonsLoading(true);
+    setAddonsError(QString());
+    m_addonRows.clear();
+    emit addonRowsChanged();
+    QtConcurrent::run([this]() {
+        const QString err = call0(g.addonsFetch);
+        QMetaObject::invokeMethod(this, "finishAddons", Qt::QueuedConnection,
+                                  Q_ARG(QString, err));
+    });
+}
+
+void DaemonController::finishAddons(const QString &err)
+{
+    if (err.isEmpty())
+        copyAddonRows();
+    setAddonsError(err);
+    setAddonsLoading(false);
+}
+
+void DaemonController::refreshAddons()
+{
+    if (g.addonsRefresh)
+        takeCString(g.addonsRefresh());
+    copyAddonRows();
+}
+
+void DaemonController::setBenchRunning(bool v)
+{
+    if (m_benchRunning == v)
+        return;
+    m_benchRunning = v;
+    emit benchRunningChanged();
+}
+
+void DaemonController::setBenchStatus(const QString &v)
+{
+    if (m_benchStatus == v)
+        return;
+    m_benchStatus = v;
+    emit benchStatusChanged();
+}
+
+QVariantMap benchRow(const QJsonObject &r)
+{
+    QVariantMap row;
+    row.insert(QStringLiteral("w"), r.value(QStringLiteral("w")).toInt());
+    row.insert(QStringLiteral("h"), r.value(QStringLiteral("h")).toInt());
+    row.insert(QStringLiteral("mode"), r.value(QStringLiteral("mode")).toString());
+    row.insert(QStringLiteral("load"), r.value(QStringLiteral("load")).toDouble());
+    row.insert(QStringLiteral("fps"), r.value(QStringLiteral("fps")).toDouble());
+    row.insert(QStringLiteral("elapsed"), r.value(QStringLiteral("elapsed")).toDouble());
+    row.insert(QStringLiteral("held"), r.value(QStringLiteral("held")).toBool());
+    row.insert(QStringLiteral("late"), r.value(QStringLiteral("late")).toBool());
+    row.insert(QStringLiteral("error"), r.value(QStringLiteral("error")).toString());
+    row.insert(QStringLiteral("reason"), r.value(QStringLiteral("reason")).toString());
+    return row;
+}
+
+void DaemonController::applyBenchJson(const QString &raw)
+{
+    QString encoder;
+    bool can = false;
+    QVariantList rows;
+    QVariantMap live;
+    const QJsonDocument doc = QJsonDocument::fromJson(raw.toUtf8());
+    if (doc.isObject()) {
+        const QJsonObject o = doc.object();
+        encoder = o.value(QStringLiteral("encoder")).toString();
+        can = o.value(QStringLiteral("canSelect")).toBool();
+        if (o.value(QStringLiteral("live")).isObject())
+            live = benchRow(o.value(QStringLiteral("live")).toObject());
+        const QJsonArray arr = o.value(QStringLiteral("rows")).toArray();
+        for (int i = 0; i < arr.size(); ++i)
+            rows.append(benchRow(arr.at(i).toObject()));
+    }
+    if (m_benchLive != live) {
+        m_benchLive = live;
+        emit benchLiveChanged();
+    }
+    if (m_benchEncoder != encoder) {
+        m_benchEncoder = encoder;
+        emit benchEncoderChanged();
+    }
+    if (m_benchCanSelect != can) {
+        m_benchCanSelect = can;
+        emit benchCanSelectChanged();
+    }
+    m_benchRows = rows;
+    emit benchRowsChanged();
+}
+
+QString DaemonController::startBench(const QString &encoder)
+{
+    if (!g.benchStart)
+        return g.error.isEmpty() ? QStringLiteral("libcargadgetdcontrol.so is missing") : g.error;
+    const QByteArray enc = encoder.toUtf8();
+    const QString err = takeCString(g.benchStart(enc.constData()));
+    refreshBench();
+    return err;
+}
+
+void DaemonController::refreshBench()
+{
+    setBenchRunning(callBool(g.benchRunning));
+    setBenchStatus(g.benchStatus ? takeCString(g.benchStatus()) : QString());
+    const QString raw = g.benchResult ? takeCString(g.benchResult()) : QString();
+    if (raw == m_benchRaw)
+        return;
+    m_benchRaw = raw;
+    applyBenchJson(raw);
+}
+
+void DaemonController::watchBench()
+{
+    if (g.benchWatch)
+        g.benchWatch();
+    refreshBench();
+}
+
+void DaemonController::clearBench()
+{
+    if (g.benchClear)
+        g.benchClear();
+    refreshBench();
 }

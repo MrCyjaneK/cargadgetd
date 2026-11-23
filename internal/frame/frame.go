@@ -87,7 +87,7 @@ func Write(w io.Writer, f Frame) error {
 }
 
 // WriteEncrypted fragments plaintext, encrypts each chunk (complete TLS record
-// per frame), and sets First-frame total to the plaintext length — matching AACS.
+// per frame), and sets First-frame total to the plaintext length - matching AACS.
 func WriteEncrypted(w io.Writer, channel, flags uint8, plain []byte, enc EncryptFunc) error {
 	return WriteEncryptedYield(w, channel, flags, plain, enc, nil, MaxPlainChunk)
 }
@@ -165,7 +165,7 @@ func appendFrame(buf []byte, channel, flags uint8, total uint32, payload []byte)
 }
 
 func writeOne(w io.Writer, channel, flags uint8, total uint32, payload []byte) error {
-	// Single write — some HU stacks (DHU) mishandle split TCP segments on the first frame.
+	// Single write - some HU stacks (DHU) mishandle split TCP segments on the first frame.
 	_, err := w.Write(appendFrame(nil, channel, flags, total, payload))
 	return err
 }

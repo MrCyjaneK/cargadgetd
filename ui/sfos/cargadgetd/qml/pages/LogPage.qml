@@ -19,7 +19,7 @@ Page {
     SilicaFlickable {
         id: flick
         anchors.fill: parent
-        contentHeight: header.height + archives.height + logLabel.height + Theme.paddingLarge
+        contentHeight: header.height + logLabel.height + Theme.paddingLarge
 
         PullDownMenu {
             MenuItem {
@@ -38,21 +38,8 @@ Page {
         }
 
         Label {
-            id: archives
-            anchors.top: header.bottom
-            x: Theme.horizontalPageMargin
-            width: parent.width - 2 * Theme.horizontalPageMargin
-            wrapMode: Text.Wrap
-            font.pixelSize: Theme.fontSizeExtraSmall
-            color: Theme.secondaryColor
-            visible: Daemon.logArchives.length > 0
-            height: visible ? implicitHeight : 0
-            text: qsTr("Earlier sessions:\n%1").arg(Daemon.logArchives)
-        }
-
-        Label {
             id: logLabel
-            anchors.top: archives.visible ? archives.bottom : header.bottom
+            anchors.top: header.bottom
             x: Theme.horizontalPageMargin
             width: parent.width - 2 * Theme.horizontalPageMargin
             wrapMode: Text.WrapAnywhere

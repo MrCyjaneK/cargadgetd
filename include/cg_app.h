@@ -17,8 +17,8 @@ extern "C" {
  * the filename). When both are present they must be the same id.
  *
  * Library name must be `libcargadgetd_app_<id>.so`, installed in
- * `/usr/lib/cargadgetd/plugins/`. Other names (music.so, reversegearhead.so)
- * are not apps. The helloworld package's id is `hello`.
+ * `/usr/lib/cargadgetd/plugins/`. Other names (music.so or else)
+ * are not apps. The hello package's id is `hello`.
  *
  *   void        cargadgetd_app_<id>_init(const struct cargadgetd_host *host);
  *   void        cargadgetd_app_<id>_draw(uint32_t *rgba, int w, int h, int stride_bytes);
@@ -35,6 +35,10 @@ extern "C" {
  *   void        cargadgetd_app_<id>_gps_sat(int gain, const char *kicker,
  *                   const char *title, const char *sub, const char *detail,
  *                   const char *flag); // optional; one lock or drop
+ *   int         cargadgetd_app_<id>_nowplaying(struct cargadgetd_nowplaying *out);
+ *               // optional; 1 when a track is live. Pointers stay valid until
+ *               // the next nowplaying call on this plugin. state is the GAL
+ *               // value: 1 stopped, 2 playing, 3 paused.
  *
  * HU keys are broadcast to every loaded app (opened or not). <event> names:
  *   mic menu home back call endcall key0..key9 star pound
@@ -45,8 +49,8 @@ extern "C" {
  * Unknown scan codes are not called; they go to apps.unhandled_log.
  *
  * Host (passed to init):
- *   play      — optional PCM mix into the shell
- *   frame_ms  — paint + video interval; 0 → 33 (same knob as video.frame_ms)
+ *   play      - optional PCM mix into the shell
+ *   frame_ms  - paint + video interval; 0 → 33 (same knob as video.frame_ms)
  *
  * Optional settings. Missing settings_count means the app has none. A count
  * above 0 means the other settings symbols are present. Indexes are that
@@ -78,7 +82,22 @@ extern "C" {
  * Required for an app the session loads: draw. All others optional.
  * name/icon may return NULL. A library that exports settings_count and
  * no draw is settings-only; the session does not load it as an app.
+ *
+ * nowplaying is optional and is not part of struct cargadgetd_host. The host
+ * dlsyms it. A missing symbol means the app has no track to publish.
  */
+
+struct cargadgetd_nowplaying {
+	const char *title;
+	const char *artist;
+	const char *album;
+	const char *app;
+	int state; /* 1 stopped, 2 playing, 3 paused */
+	int duration_seconds;
+	int position_seconds;
+	const uint8_t *art_png;
+	int art_len;
+};
 
 struct cargadgetd_host {
 	void (*play)(const int16_t *pcm, int nframes, int channels, int sample_rate);

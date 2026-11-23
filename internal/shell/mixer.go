@@ -5,7 +5,7 @@ import "sync"
 // Mixer queues plugin PCM into the USB output format.
 // Play is a FIFO: consecutive chunks from one stream are concatenated, not
 // overlapping-added. (Saturating-add of each play() made music loopback into
-// mush — every ~42ms chunk was mixed on top of the previous one.)
+// mush - every ~42ms chunk was mixed on top of the previous one.)
 type Mixer struct {
 	mu      sync.Mutex
 	cond    *sync.Cond
@@ -94,7 +94,7 @@ func (m *Mixer) enqueue(pcm []int16, nframes, channels, rate int, block bool) {
 	on := m.onPlay
 	m.mu.Unlock()
 	if on != nil {
-		on() // must return quickly — no USB/OpenAudio on this stack
+		on() // must return quickly - no USB/OpenAudio on this stack
 	}
 }
 
@@ -130,7 +130,7 @@ func (m *Mixer) Pending() bool {
 
 // Mix writes one host-format chunk into dst (zeros dst first).
 // Starts only after two full chunks are queued (one to send, one ahead).
-// Never copies a partial chunk — a short buffer is silence, not a click.
+// Never copies a partial chunk - a short buffer is silence, not a click.
 func (m *Mixer) Mix(dst []int16) {
 	for i := range dst {
 		dst[i] = 0

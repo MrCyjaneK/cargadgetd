@@ -6,9 +6,7 @@ Page {
     property bool _ready: false
 
     function apply(section, row, value) {
-        var err = PluginSettings.setRow(section, row, value)
-        if (err === "")
-            Daemon.reloadYaml()
+        PluginSettings.setRow(section, row, value)
     }
 
     Timer {
@@ -158,55 +156,6 @@ Page {
                 }
             }
 
-            SectionHeader { text: qsTr("This app") }
-
-            TextField {
-                width: parent.width
-                label: qsTr("MD daemon binary")
-                text: Daemon.binaryPath
-                EnterKey.onClicked: { Daemon.binaryPath = text; focus = false }
-                onFocusChanged: if (!focus) Daemon.binaryPath = text
-            }
-            Label {
-                x: Theme.horizontalPageMargin
-                width: parent.width - 2 * Theme.horizontalPageMargin
-                wrapMode: Text.Wrap
-                color: Theme.secondaryColor
-                font.pixelSize: Theme.fontSizeExtraSmall
-                text: qsTr("cargadgetd-md this app starts. Not written to the YAML.")
-            }
-
-            TextField {
-                width: parent.width
-                label: qsTr("USB gadget binary")
-                text: Daemon.gadgetPath
-                EnterKey.onClicked: { Daemon.gadgetPath = text; focus = false }
-                onFocusChanged: if (!focus) Daemon.gadgetPath = text
-            }
-            Label {
-                x: Theme.horizontalPageMargin
-                width: parent.width - 2 * Theme.horizontalPageMargin
-                wrapMode: Text.Wrap
-                color: Theme.secondaryColor
-                font.pixelSize: Theme.fontSizeExtraSmall
-                text: qsTr("setuid cargadgetd-gadget this app starts. Not written to the YAML.")
-            }
-
-            TextField {
-                width: parent.width
-                label: qsTr("Shared log file")
-                text: Daemon.logPath
-                EnterKey.onClicked: { Daemon.logPath = text; focus = false }
-                onFocusChanged: if (!focus) Daemon.logPath = text
-            }
-            Label {
-                x: Theme.horizontalPageMargin
-                width: parent.width - 2 * Theme.horizontalPageMargin
-                wrapMode: Text.Wrap
-                color: Theme.secondaryColor
-                font.pixelSize: Theme.fontSizeExtraSmall
-                text: qsTr("Cleared on Start. Gadget and MD both append here.")
-            }
         }
 
         VerticalScrollDecorator {}

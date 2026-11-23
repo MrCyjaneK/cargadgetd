@@ -18,7 +18,7 @@ var (
 const PluginDir = "/usr/lib/cargadgetd/plugins"
 
 // ListPlugins returns libcargadgetd_app_<id>.so paths. Other .so files in the
-// directory (reversegearhead.so, a bare music.so) are not apps. The first
+// directory (a bare music.so, a shell plugin) are not apps. The first
 // directory wins per basename.
 func ListPlugins(dirs []string) []string {
 	seen := map[string]bool{}

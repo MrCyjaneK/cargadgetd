@@ -103,7 +103,7 @@ func TestEncryptLarge(t *testing.T) {
 	defer cli.Close()
 	handshakeAndPing(t, srv, cli)
 
-	// One TLS record max — plain ≤16384; USB path uses MaxPlainChunkUSB.
+	// One TLS record max - plain ≤16384; USB path uses MaxPlainChunkUSB.
 	for _, sz := range []int{1600, 2000, 14000, 16384} {
 		plain := make([]byte, sz)
 		for i := range plain {

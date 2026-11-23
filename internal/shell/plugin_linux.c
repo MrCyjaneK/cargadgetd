@@ -167,6 +167,21 @@ static void *cg_app_sym(void *h, const char *app, const char *method)
 	return dlsym(h, buf);
 }
 
+void *cg_nowplaying_sym(void *h, const char *app)
+{
+	return cg_app_sym(h, app, "nowplaying");
+}
+
+int cg_call_nowplaying(void *fn, struct cargadgetd_nowplaying *out)
+{
+	int (*f)(struct cargadgetd_nowplaying *);
+
+	if (!fn || !out)
+		return 0;
+	f = fn;
+	return f(out);
+}
+
 void *cg_gps_fix_sym(void *h, const char *app)
 {
 	return cg_app_sym(h, app, "gps_fix");

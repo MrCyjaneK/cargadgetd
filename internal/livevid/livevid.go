@@ -60,7 +60,7 @@ type Options struct {
 	// leaves the USB frame budget (~20KB/frame). A higher hint only raises.
 	Bitrate int
 	Paint   func(*image.RGBA, time.Time)
-	// Encoder is "droidmedia" (Sailfish HAL) or "software" (x264).
+	// Encoder is "droidmedia" (Sailfish HAL), "software" (x264), or "software-fast".
 	Encoder string
 }
 
@@ -135,7 +135,7 @@ func (r *Renderer) ForceIDR() {
 
 // Encode paints now, when a painter is set, and returns one Annex-B AU.
 // A nil painter leaves the RGBA buffer as it is (black until something paints).
-// Only call when the AU will be sent — encoding without send desyncs the HU.
+// Only call when the AU will be sent - encoding without send desyncs the HU.
 func (r *Renderer) Encode(now time.Time) ([]byte, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -160,7 +160,9 @@ func (r *Renderer) encodeLocked() ([]byte, error) {
 		return nil, err
 	}
 	if len(au) == 0 {
-		return nil, fmt.Errorf("livevid: empty AU")
+		// Hardware keeps the first frame in flight so the next convert
+		// overlaps the codec. Nothing to send yet.
+		return nil, nil
 	}
 	// Send the picture as-is. writeMedia already splits it into 12KB USB
 	// records. Cutting CBR and reopening Codec2 to squeeze a fat frame did
@@ -214,7 +216,7 @@ func (r *Renderer) applyDownLocked(next int, why string) {
 	r.bps = next
 	r.lastChange = time.Now()
 	r.healthy = 0
-	log.Printf("livevid: %s — bitrate %d→%d", why, old, next)
+	log.Printf("livevid: %s - bitrate %d→%d", why, old, next)
 }
 
 // noteCutLocked pins the climb ceiling when a rate we just raised does not fit.
@@ -255,7 +257,7 @@ func (r *Renderer) considerClimbLocked(n int) {
 	r.climbedAt = r.lastChange
 	r.healthy = 0
 	r.forceIDR = true
-	log.Printf("livevid: pipe clear — bitrate %d→%d", old, next)
+	log.Printf("livevid: pipe clear - bitrate %d→%d", old, next)
 }
 
 func (r *Renderer) Size() (int, int) { return r.w, r.h }

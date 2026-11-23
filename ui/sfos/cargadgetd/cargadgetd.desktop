@@ -7,5 +7,5 @@ Icon=cargadgetd
 Exec=cargadgetd
 
 [X-Sailjail]
-# Needs FFS, pgrep/pkill, and spawning MD — not Harbour-sandboxable.
+# Needs FFS, pgrep/pkill, and spawning MD - not Harbour-sandboxable.
 Sandboxing=Disabled

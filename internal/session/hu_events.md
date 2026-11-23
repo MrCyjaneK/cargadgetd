@@ -10,13 +10,13 @@ Both soaks healthy (`tx2=1041` then `1415`, `decode_err=0`, `ping_to=0`). No `UN
 
 | Capture | GAL | Corresponds to |
 |---|---|---|
-| `SDR sensor ch=1 types=1:Location,2:Compass,3:CarSpeed,5:Odometer,6:FuelLevel,7:ParkingBrake,8:Gear,10:NightData,13:DrivingStatus,19:Accel,20:Gyro` | ServiceDiscovery sensor channel | DHU `[sensors]` ini — **advertise only** |
+| `SDR sensor ch=1 types=1:Location,2:Compass,3:CarSpeed,5:Odometer,6:FuelLevel,7:ParkingBrake,8:Gear,10:NightData,13:DrivingStatus,19:Accel,20:Gyro` | ServiceDiscovery sensor channel | DHU `[sensors]` ini - **advertise only** |
 | `SDR input ch=3 touch=800x480 buttons=[1…23, 81, 84, 85, 87, 88, 126, 127, 268–271, 65536, 65537, 65538, 65540]` | Input channel, 800×480. Buttons are **packed** varints in field 1 (not repeated `08 <code>`) | `touch=true` `controller=true` `resolution=800x480` |
 | `SDR channel=6 kind=vendor` | Vendor extension | DHU example `EchoVendorExtension` / `com.example.echovendor`. Ignored |
 | `SDR channel=7 kind=media_input` | Mic uplink 16 kHz s16le mono | DHU default mic. Not opened |
 | `VIDEO_FOCUS focus=1 body=08011001` | VideoFocusIndication field1=1 (focused), field2=1 | Session start |
 | `INPUT_HANDSHAKE buttons=[… packed extras + 86 …] hu_sdr=[packed list]` | MD handshake echoes built-in set **plus** HU SDR extras | HU only sends keys listed here |
-| `INPUT touch=400,240 action=0` then `action=1` | `InputEvent` 0x8001, `TouchEvent` **field 3**. action 0=Press, 1=Release. Pixels | DHU **`tap 400 240`** — only stdin command that produced GAL |
+| `INPUT touch=400,240 action=0` then `action=1` | `InputEvent` 0x8001, `TouchEvent` **field 3**. action 0=Press, 1=Release. Pixels | DHU **`tap 400 240`** - only stdin command that produced GAL |
 
 Touch body (tap): timestamp field 1, `TouchEvent` `0x1a`: location x=400 y=240 pointer=0, action_index=0, action=0/1. Matches `proto/aa.proto`. **ButtonsEvent field 4 vs 5 is still unverified** (no button frame arrived).
 
@@ -68,7 +68,7 @@ Our handshake also claims **86 MEDIA_STOP** (not in DHU SDR).
 
 | Command | Expected | Wire |
 |---|---|---|
-| `night` `day` `daynight` `nightday` | `SensorEvent` type 10 NightData (inner field 1: 0=day, 1=night) | **none** — DHU accepted; no StartRequest |
+| `night` `day` `daynight` `nightday` | `SensorEvent` type 10 NightData (inner field 1: 0=day, 1=night) | **none** - DHU accepted; no StartRequest |
 
 ### Driving restrictions
 
@@ -80,7 +80,7 @@ Help only lists `none` and `all`. Binary strings also have `restrict video|keybo
 
 ### Fuel / misc sensors
 
-All accepted; **no `SensorEvent`** (MD does not send `SensorStartRequest` — DHU `gal.SensorRequest` required-fields fail → disconnect).
+All accepted; **no `SensorEvent`** (MD does not send `SensorStartRequest` - DHU `gal.SensorRequest` required-fields fail → disconnect).
 
 | Command | Type | Notes |
 |---|---|---|
@@ -103,7 +103,7 @@ Not in this DHU SDR: RPM(4), Diagnostics(9), Environment(11), HVAC(12), DeadReck
 | `focus audio` / `focus nav` / `focus video` / `focus video toggle` | AudioFocus / NavFocus / VideoFocusIndication |
 | `mic begin` / `play` / `repeat` / `reject` | Voice / mic input |
 | `tollcard insert` / `remove` | Sensor (not in our type table) |
-| `tap x y` | **Touch InputEvent — verified** |
+| `tap x y` | **Touch InputEvent - verified** |
 | `help` `quit` `exit` `licenses` `sleep` `screenshot` | Local DHU |
 
 ## Why sensors/keys stay off the wire

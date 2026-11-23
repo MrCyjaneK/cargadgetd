@@ -7,11 +7,11 @@ import (
 	"github.com/cargadgetd/cargadgetd/internal/cfg"
 )
 
-// AudioType from GAL MediaChannel.audio_type.
 const (
-	AudioTypeMedia  = 1
-	AudioTypeSpeech = 2
-	AudioTypeSystem = 3
+	AudioTypeGuidance  = 1
+	AudioTypeSystem    = 2
+	AudioTypeMedia     = 3
+	AudioTypeTelephony = 4
 )
 
 type audioCfg struct {
@@ -24,12 +24,14 @@ func (c audioCfg) String() string {
 
 func audioTypeName(t int) string {
 	switch t {
-	case AudioTypeMedia:
-		return "media"
-	case AudioTypeSpeech:
-		return "speech"
+	case AudioTypeGuidance:
+		return "guidance"
 	case AudioTypeSystem:
 		return "system"
+	case AudioTypeMedia:
+		return "media"
+	case AudioTypeTelephony:
+		return "telephony"
 	default:
 		return fmt.Sprintf("type=%d", t)
 	}
@@ -235,12 +237,14 @@ func audioWant() int {
 
 func audioTypeWant() int {
 	switch strings.ToLower(strings.TrimSpace(cfg.Get().Audio.Type)) {
-	case "media":
-		return AudioTypeMedia
-	case "speech":
-		return AudioTypeSpeech
+	case "guidance":
+		return AudioTypeGuidance
 	case "system":
 		return AudioTypeSystem
+	case "media":
+		return AudioTypeMedia
+	case "telephony":
+		return AudioTypeTelephony
 	default:
 		return 0
 	}

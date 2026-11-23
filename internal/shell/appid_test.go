@@ -120,7 +120,7 @@ func TestAppIDFromBasename(t *testing.T) {
 		"/tmp/music.so",
 		"/tmp/libcargadgetd_app_foo-bar.so",
 		"/tmp/libcargadgetd_app_.so",
-		"/usr/lib/cargadgetd/plugins/reversegearhead.so",
+		"/usr/lib/cargadgetd/plugins/notes.so",
 		"/usr/lib/cargadgetd/plugins/libcargadgetd_shell_basic.so",
 	} {
 		if _, err := appIDFromBasename(name); err == nil {
