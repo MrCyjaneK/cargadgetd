@@ -1,89 +1,97 @@
 package cfg
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
-func PatchSectionKey(path, section, key, val string) error {
-	if path == "" {
-		return os.ErrNotExist
+// SetKey sets section.key and writes the file back.
+// A file that is not YAML is moved to config.yaml.YYYY-MM-DD.old and
+// replaced with a document that contains only this key.
+func SetKey(path, section, key string, value any) error {
+	if path == "" || section == "" || key == "" {
+		return os.ErrInvalid
 	}
+	m := map[string]any{}
 	b, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
+	switch {
+	case err == nil:
+		if uerr := yaml.Unmarshal(b, &m); uerr != nil || configOK(b) != nil {
+			if _, qerr := moveAside(path); qerr != nil {
+				return qerr
+			}
+			m = map[string]any{}
+		}
+	case os.IsNotExist(err):
+	default:
 		return err
 	}
-	text := ""
-	if err == nil {
-		text = strings.ReplaceAll(string(b), "\r\n", "\n")
+	if m == nil {
+		m = map[string]any{}
 	}
-	if strings.TrimSpace(text) == "" {
-		return writeConfig(path, section+":\n  "+key+": "+val+"\n")
+	sec, _ := m[section].(map[string]any)
+	if sec == nil {
+		sec = map[string]any{}
 	}
-	lines := strings.Split(text, "\n")
-	secAt := -1
-	for i, ln := range lines {
-		if topKey(ln) == section {
-			secAt = i
-			break
-		}
+	sec[key] = value
+	m[section] = sec
+	out, err := yaml.Marshal(m)
+	if err != nil {
+		return err
 	}
-	if secAt < 0 {
-		if len(lines) > 0 && lines[len(lines)-1] == "" {
-			lines = lines[:len(lines)-1]
-		}
-		lines = append(lines, section+":", "  "+key+": "+val, "")
-		return writeConfig(path, strings.Join(lines, "\n")+"\n")
-	}
-	end := len(lines)
-	found := -1
-	for i := secAt + 1; i < len(lines); i++ {
-		trim := strings.TrimSpace(lines[i])
-		if trim == "" || strings.HasPrefix(trim, "#") {
-			continue
-		}
-		if indentWidth(lines[i]) == 0 {
-			end = i
-			break
-		}
-		if childKey(trim) == key {
-			found = i
-		}
-	}
-	if found >= 0 {
-		pad := leadingWS(lines[found])
-		if pad == "" {
-			pad = "  "
-		}
-		lines[found] = pad + key + ": " + val
-	} else {
-		line := "  " + key + ": " + val
-		lines = append(lines[:end], append([]string{line}, lines[end:]...)...)
-	}
-	out := strings.Join(lines, "\n")
-	if !strings.HasSuffix(out, "\n") {
-		out += "\n"
-	}
-	return writeConfig(path, out)
+	return writeConfig(path, string(out))
 }
 
-func topKey(line string) string {
-	if indentWidth(line) != 0 {
-		return ""
+// rejectBrokenUser moves a user config that is not YAML aside, writes the
+// compiled defaults, and returns an error so the process can exit.
+// The new file has no first_run: false, so the next start shows the wizard.
+func rejectBrokenUser() error {
+	p := UserPath()
+	if p == "" {
+		return nil
 	}
-	return childKey(strings.TrimSpace(line))
+	b, err := os.ReadFile(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if err := configOK(b); err != nil {
+		dest, qerr := moveAside(p)
+		if qerr != nil {
+			return fmt.Errorf("%s: %w", p, err)
+		}
+		body, werr := encodeYAML(Default())
+		if werr != nil {
+			return werr
+		}
+		if werr = writeConfig(p, string(body)); werr != nil {
+			return werr
+		}
+		return fmt.Errorf("%s: %w; moved to %s and wrote defaults", p, err, dest)
+	}
+	return nil
 }
 
-func childKey(trim string) string {
-	if trim == "" || strings.HasPrefix(trim, "#") {
-		return ""
+func configOK(b []byte) error {
+	var f fileConfig
+	return yaml.Unmarshal(b, &f)
+}
+
+func moveAside(path string) (string, error) {
+	dest := path + "." + time.Now().Format("2006-01-02") + ".old"
+	if _, err := os.Stat(dest); err == nil {
+		dest = path + "." + time.Now().Format("2006-01-02-150405") + ".old"
 	}
-	i := strings.IndexByte(trim, ':')
-	if i <= 0 {
-		return ""
+	if err := os.Rename(path, dest); err != nil {
+		return "", err
 	}
-	return trim[:i]
+	return dest, nil
 }
 
 func writeConfig(path, body string) error {
@@ -109,27 +117,4 @@ func writeConfig(path, body string) error {
 		return err
 	}
 	return os.Rename(name, path)
-}
-
-func indentWidth(s string) int {
-	n := 0
-	for _, r := range s {
-		switch r {
-		case ' ':
-			n++
-		case '\t':
-			n += 2
-		default:
-			return n
-		}
-	}
-	return n
-}
-
-func leadingWS(s string) string {
-	i := 0
-	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
-		i++
-	}
-	return s[:i]
 }

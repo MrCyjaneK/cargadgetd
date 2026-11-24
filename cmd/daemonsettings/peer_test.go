@@ -55,7 +55,7 @@ func TestPeerEnumListsDevicesAndSavesMAC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `peer: "11:22:33:44:55:66"`) {
+	if !strings.Contains(string(b), "peer: 11:22:33:44:55:66") && !strings.Contains(string(b), `peer: "11:22:33:44:55:66"`) {
 		t.Fatalf("yaml %s", b)
 	}
 	clearPeerCache()

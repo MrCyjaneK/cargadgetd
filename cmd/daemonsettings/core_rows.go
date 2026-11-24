@@ -97,11 +97,7 @@ func saveLive(on bool) error       { return patchBool("video", "live", on) }
 func saveStrict(on bool) error     { return patchBool("apps", "strict", on) }
 
 func patchBool(section, key string, on bool) error {
-	val := "false"
-	if on {
-		val = "true"
-	}
-	return patchSectionKey(userConfigPath(), section, key, val)
+	return patchSectionKey(userConfigPath(), section, key, on)
 }
 
 func saveInt(min, max int, section, key string) func(string) error {
@@ -110,20 +106,20 @@ func saveInt(min, max int, section, key string) func(string) error {
 		if err != nil || n < min || n > max {
 			return errString(key + " out of range")
 		}
-		return patchSectionKey(userConfigPath(), section, key, strconv.Itoa(n))
+		return patchSectionKey(userConfigPath(), section, key, n)
 	}
 }
 
 func saveQuoted(section, key string) func(string) error {
 	return func(v string) error {
-		return patchSectionKey(userConfigPath(), section, key, strconv.Quote(strings.TrimSpace(v)))
+		return patchSectionKey(userConfigPath(), section, key, strings.TrimSpace(v))
 	}
 }
 
 func saveAudioType(v string) error {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "media", "system", "guidance", "telephony", "auto":
-		return patchSectionKey(userConfigPath(), "audio", "type", strconv.Quote(strings.ToLower(strings.TrimSpace(v))))
+		return patchSectionKey(userConfigPath(), "audio", "type", strings.ToLower(strings.TrimSpace(v)))
 	default:
 		return errString("audio type must be auto, media, system, guidance, or telephony")
 	}
@@ -152,14 +148,14 @@ func saveChannels(v string) error {
 	default:
 		return errString("channels must be auto, mono, or stereo")
 	}
-	return patchSectionKey(userConfigPath(), "audio", "channels", strconv.Itoa(n))
+	return patchSectionKey(userConfigPath(), "audio", "channels", n)
 }
 
 func saveVideoSize(v string) error {
 	v = strings.ToLower(strings.TrimSpace(v))
 	switch v {
 	case "auto", "800x480", "1280x720", "1920x1080", "2560x1440", "3840x2160":
-		return patchSectionKey(userConfigPath(), "video", "size", strconv.Quote(v))
+		return patchSectionKey(userConfigPath(), "video", "size", v)
 	default:
 		return errString("video size must be auto or WxH")
 	}
@@ -173,7 +169,7 @@ func saveTransport(v string) error {
 	if !ok {
 		return errString("unknown transport")
 	}
-	if err := patchSectionKey(userConfigPath(), "daemon", "transport", strconv.Quote(mode)); err != nil {
+	if err := patchSectionKey(userConfigPath(), "daemon", "transport", mode); err != nil {
 		return err
 	}
 	if _, err := os.Stat(packagedGadget); err != nil {
@@ -216,7 +212,7 @@ func saveListen(v string) error {
 	if v == "" {
 		v = "ffs:///dev/usb-ffs/aa"
 	}
-	return patchSectionKey(userConfigPath(), "daemon", "listen", strconv.Quote(v))
+	return patchSectionKey(userConfigPath(), "daemon", "listen", v)
 }
 
 func saveControl(v string) error {
@@ -224,11 +220,11 @@ func saveControl(v string) error {
 	if v == "" {
 		v = "tcp://127.0.0.1:9277"
 	}
-	return patchSectionKey(userConfigPath(), "daemon", "control", strconv.Quote(v))
+	return patchSectionKey(userConfigPath(), "daemon", "control", v)
 }
 
 func saveCerts(v string) error {
-	return patchSectionKey(userConfigPath(), "daemon", "certs", strconv.Quote(rgh.Canonical(v)))
+	return patchSectionKey(userConfigPath(), "daemon", "certs", rgh.Canonical(v))
 }
 
 func saveGadgetPath(v string) error {
@@ -236,7 +232,7 @@ func saveGadgetPath(v string) error {
 	if v == "" {
 		v = "/sys/kernel/config/usb_gadget/aa"
 	}
-	return patchSectionKey(userConfigPath(), "gadget", "path", strconv.Quote(v))
+	return patchSectionKey(userConfigPath(), "gadget", "path", v)
 }
 
 func saveSink(v string) error {
@@ -244,7 +240,7 @@ func saveSink(v string) error {
 	if v == "" {
 		v = "sink.null"
 	}
-	return patchSectionKey(userConfigPath(), "music", "sink", strconv.Quote(v))
+	return patchSectionKey(userConfigPath(), "music", "sink", v)
 }
 
 func coreAt(i int) (coreSpec, bool) {

@@ -2,7 +2,6 @@ package control
 
 import (
 	"context"
-	"strconv"
 	"strings"
 	"time"
 
@@ -49,7 +48,7 @@ func CertsDownload() string {
 }
 
 func resetCertsLocation() error {
-	return cfg.PatchSectionKey(cfg.UserPath(), "daemon", "certs", strconv.Quote(rgh.ConfigDefault))
+	return cfg.SetKey(cfg.UserPath(), "daemon", "certs", rgh.ConfigDefault)
 }
 
 func CertsInstall(apk string) string {

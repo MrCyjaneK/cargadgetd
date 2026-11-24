@@ -3,7 +3,6 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/cargadgetd/cargadgetd/internal/cfg"
@@ -64,7 +63,7 @@ func saveGPS(label string) error {
 	if gpsLabel(label) == "Mock" {
 		id = "mock"
 	}
-	return patchSectionKey(userConfigPath(), "gps", "backend", strconv.Quote(id))
+	return patchSectionKey(userConfigPath(), "gps", "backend", id)
 }
 
 func loadCore() coreState {
@@ -98,7 +97,7 @@ func saveShell(id string) error {
 	if !validShellID(id) {
 		return errString("shell id must be a name")
 	}
-	return patchSectionKey(userConfigPath(), "shell", "id", strconv.Quote(id))
+	return patchSectionKey(userConfigPath(), "shell", "id", id)
 }
 
 func validShellID(id string) bool {
@@ -116,19 +115,11 @@ func validShellID(id string) bool {
 }
 
 func saveAudio(on bool) error {
-	val := "false"
-	if on {
-		val = "true"
-	}
-	return patchSectionKey(userConfigPath(), "audio", "enabled", val)
+	return patchSectionKey(userConfigPath(), "audio", "enabled", on)
 }
 
 func saveLoopback(on bool) error {
-	val := "false"
-	if on {
-		val = "true"
-	}
-	return patchSectionKey(userConfigPath(), "music", "loopback", val)
+	return patchSectionKey(userConfigPath(), "music", "loopback", on)
 }
 
 func saveEncoder(enc string) error {
@@ -136,14 +127,14 @@ func saveEncoder(enc string) error {
 	if !ok {
 		return errString("encoder must be " + videoenc.IDs())
 	}
-	return patchSectionKey(userConfigPath(), "video", "encoder", strconv.Quote(id))
+	return patchSectionKey(userConfigPath(), "video", "encoder", id)
 }
 
 func saveFrame(ms int) error {
 	if ms < 16 || ms > 200 {
 		return errString("frame_ms must be 16-200")
 	}
-	return patchSectionKey(userConfigPath(), "video", "frame_ms", strconv.Itoa(ms))
+	return patchSectionKey(userConfigPath(), "video", "frame_ms", ms)
 }
 
 type errString string
@@ -357,6 +348,6 @@ func userConfigPath() string {
 	return filepath.Join(dir, "cargadgetd", "config.yaml")
 }
 
-func patchSectionKey(path, section, key, val string) error {
-	return cfg.PatchSectionKey(path, section, key, val)
+func patchSectionKey(path, section, key string, val any) error {
+	return cfg.SetKey(path, section, key, val)
 }

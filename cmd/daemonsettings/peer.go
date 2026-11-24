@@ -5,7 +5,6 @@ import (
 	"os/exec"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -106,7 +105,7 @@ func savePeer(v string) error {
 	if v != "" && !strings.EqualFold(v, "none") && mac == "" {
 		return errString("head unit must be a bluetooth address")
 	}
-	return patchSectionKey(userConfigPath(), "daemon", "peer", strconv.Quote(mac))
+	return patchSectionKey(userConfigPath(), "daemon", "peer", mac)
 }
 
 func formatPeer(p btPeer) string {

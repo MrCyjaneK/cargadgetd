@@ -211,8 +211,10 @@ func LoadedFrom() string {
 
 // Load merges compiled defaults with config files. explicit, if set, is the
 // only file read (after defaults) and does not create the user config.
-// Otherwise, if ~/.config/cargadgetd/config.yaml is missing, it is written
-// from Default(). Then files are applied in order:
+// Otherwise a user config that is not YAML is moved aside, replaced with
+// defaults, and Load returns an error so the process can exit. The replacement
+// leaves first_run unset, so the next start shows the wizard. A missing user
+// config is written from Default(). Then files are applied in order:
 //
 //	/usr/share/cargadgetd/config.yaml
 //	/etc/cargadgetd/config.yaml
@@ -225,6 +227,9 @@ func Load(explicit string) error {
 		}
 		set(c, explicit)
 		return nil
+	}
+	if err := rejectBrokenUser(); err != nil {
+		return err
 	}
 	wrote, writeErr := ensureUserConfig()
 	var files []string

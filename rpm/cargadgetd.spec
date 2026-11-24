@@ -2,7 +2,7 @@
 
 Name:           cargadgetd
 Version:        0.1
-Release:        7
+Release:        8
 Summary:        Android Auto phone stack and Sailfish control UI
 Group:          Applications/System
 License:        GPLv3

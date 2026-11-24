@@ -362,6 +362,100 @@ func TestTransportUnknownIsUSB(t *testing.T) {
 	}
 }
 
+func TestLoadReplacesBrokenUserConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Cleanup(func() {
+		mu.Lock()
+		current = nil
+		loaded = ""
+		mu.Unlock()
+	})
+	p := UserPath()
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const broken = "{]\n"
+	if err := os.WriteFile(p, []byte(broken), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := Load("")
+	if err == nil {
+		t.Fatal("broken config must fail so the process exits")
+	}
+	matches, gerr := filepath.Glob(p + ".*.old")
+	if gerr != nil {
+		t.Fatal(gerr)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("backup %v", matches)
+	}
+	old, rerr := os.ReadFile(matches[0])
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if string(old) != broken {
+		t.Fatalf("backup %q", old)
+	}
+	parsed := Default()
+	if err := applyFile(parsed, p); err != nil {
+		t.Fatal(err)
+	}
+	want := Default()
+	if *parsed != *want {
+		t.Fatalf("replacement\n got %+v\nwant %+v", parsed, want)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "first_run: false") {
+		t.Fatalf("rewritten config still finishes onboarding:\n%s", b)
+	}
+}
+
+func TestSetKeyKeepsSiblingsAndReplacesBroken(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	body := "video:\n  live: true\ndaemon:\n  listen: \"ffs:///dev/usb-ffs/aa\"\n  first_run: false\n"
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetKey(p, "daemon", "certs", "~/.local/share/cargadgetd/certs"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if !strings.Contains(text, "live: true") || !strings.Contains(text, "first_run: false") || !strings.Contains(text, "listen:") || !strings.Contains(text, "~/.local/share/cargadgetd/certs") {
+		t.Fatalf("round trip\n%s", text)
+	}
+
+	if err := os.WriteFile(p, []byte("{]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetKey(p, "audio", "enabled", false); err != nil {
+		t.Fatal(err)
+	}
+	matches, err := filepath.Glob(p + ".*.old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("backup %v", matches)
+	}
+	got, err = os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text = string(got)
+	if strings.Contains(text, "live:") || strings.Contains(text, "first_run:") || !strings.Contains(text, "enabled: false") {
+		t.Fatalf("broken file was not replaced:\n%s", text)
+	}
+}
+
 func TestExpandPath(t *testing.T) {
 	if ExpandPath("  /tmp/x  ") != "/tmp/x" {
 		t.Fatal("trim")

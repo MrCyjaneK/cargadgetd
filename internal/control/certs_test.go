@@ -36,7 +36,7 @@ func TestResetCertsLocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(b)
-	if !strings.Contains(text, `certs: "~/.local/share/cargadgetd/certs"`) {
+	if !strings.Contains(text, rgh.ConfigDefault) {
 		t.Fatalf("config:\n%s", text)
 	}
 	if !strings.Contains(text, "first_run: false") || !strings.Contains(text, "live: true") || !strings.Contains(text, "listen:") {
