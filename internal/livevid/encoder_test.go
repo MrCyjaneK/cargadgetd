@@ -43,3 +43,25 @@ func TestStepBitrate(t *testing.T) {
 		t.Fatalf("cap: %d", stepUp(4_000_000, 4_800_000))
 	}
 }
+
+// An explicit target is what lets a session open below the frame budget. The
+// budget stays the default; a head unit that reboots its decoder under a heavy
+// stream needs the lower rate from the very first frame, not after a step-down
+// that only happens once the unit has stopped acking.
+func TestOpenRateWithTarget(t *testing.T) {
+	cases := []struct {
+		name string
+		o    Options
+		want int
+	}{
+		{"budget by default", Options{Width: 1280, Height: 720, FPS: 30}, 4_800_000},
+		{"explicit 1500 kbps", Options{Width: 1280, Height: 720, FPS: 30, TargetBps: 1500 * 1000}, 1_500_000},
+		{"below the floor is raised", Options{Width: 1280, Height: 720, FPS: 30, TargetBps: 100 * 1000}, minBps},
+		{"above the ceiling is clamped", Options{Width: 1280, Height: 720, FPS: 30, TargetBps: 20_000_000}, 6_000_000},
+	}
+	for _, c := range cases {
+		if got := openRate(c.o); got != c.want {
+			t.Errorf("%s: openRate = %d, want %d", c.name, got, c.want)
+		}
+	}
+}

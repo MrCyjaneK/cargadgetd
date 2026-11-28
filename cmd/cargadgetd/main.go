@@ -501,7 +501,7 @@ func runSession(md *session.MD, usbPace bool) {
 		if !ui.WaitLoad(2 * time.Minute) {
 			log.Printf("shell: plugin load timed out; opening encoder anyway")
 		}
-		live, err := livevid.New(livevid.Options{Width: vw, Height: vh, FPS: fps, Bitrate: 400, Paint: paint, Encoder: conf.Video.Encoder})
+		live, err := livevid.New(livevid.Options{Width: vw, Height: vh, FPS: fps, Bitrate: 400, TargetBps: conf.Video.BitrateKbps * 1000, Paint: paint, Encoder: conf.Video.Encoder})
 		if err != nil {
 			log.Printf("livevid: %v", err)
 			return

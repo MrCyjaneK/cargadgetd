@@ -59,7 +59,12 @@ type Options struct {
 	// Bitrate is a kbps hint for hardware CBR. At or below 1000 kbps it
 	// leaves the USB frame budget (~20KB/frame). A higher hint only raises.
 	Bitrate int
-	Paint   func(*image.RGBA, time.Time)
+	// TargetBps is an absolute CBR target in bits per second, and it can go
+	// *below* the budget, which the hint cannot: some head units reboot their
+	// decoder under a heavy stream, and the adaptive step-down only reacts once
+	// the unit has already stopped acking. 0 keeps the budget.
+	TargetBps int
+	Paint     func(*image.RGBA, time.Time)
 	// Encoder is "droidmedia" (Sailfish HAL), "software" (x264), or "software-fast".
 	Encoder string
 }
@@ -84,7 +89,7 @@ func New(opts Options) (*Renderer, error) {
 		h:       opts.Height,
 		fps:     opts.FPS,
 		bitrate: opts.Bitrate,
-		bps:     hwBitrate(opts.Width, opts.Height, opts.FPS, opts.Bitrate),
+		bps:     openRate(opts),
 		paint:   opts.Paint,
 		want:    opts.Encoder,
 	}
@@ -169,6 +174,16 @@ func (r *Renderer) encodeLocked() ([]byte, error) {
 	// not shrink the next one, and the create killed JP2026 inside droid create.
 	r.considerClimbLocked(len(au))
 	return au, nil
+}
+
+// openRate is the CBR target the encoder is opened with, and the ceiling the
+// adaptive up-step may return to. TargetBps wins when set; otherwise the USB
+// frame budget applies.
+func openRate(o Options) int {
+	if o.TargetBps > 0 {
+		return clampBps(o.TargetBps)
+	}
+	return hwBitrate(o.Width, o.Height, o.FPS, o.Bitrate)
 }
 
 // Bitrate is the live CBR target in bits per second.
