@@ -41,6 +41,18 @@ const (
 	frameBudget = 20_000
 )
 
+// clampBps keeps an explicit target inside what the hardware encoder and the
+// link can actually do.
+func clampBps(bps int) int {
+	if bps < minBps {
+		return minBps
+	}
+	if bps > 6_000_000 {
+		return 6_000_000
+	}
+	return bps
+}
+
 func hwBitrate(w, h, fps, hintKBPS int) int {
 	_ = w
 	_ = h

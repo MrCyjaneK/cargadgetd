@@ -51,6 +51,16 @@ type Video struct {
 	FrameMs int
 	// Live enables the live RGBA encoder. false skips the encode loop.
 	Live bool
+	// BitrateKbps lowers the CBR target below the USB frame budget (~4.8 Mbps
+	// at 30fps). 0 keeps the budget, which is the default and the highest rate
+	// the encoder will use.
+	//
+	// It exists because some head units reboot their decoder under a heavy
+	// stream: on a VW MIB3 the projection died under the frame budget, and the
+	// adaptive step-down cannot save that session because it only reacts once
+	// the unit has already stopped acking. 1500 kbps is the rate that ran end to
+	// end there.
+	BitrateKbps int
 }
 
 type Audio struct {

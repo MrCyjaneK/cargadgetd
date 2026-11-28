@@ -468,3 +468,36 @@ func TestExpandPath(t *testing.T) {
 		t.Fatalf("tilde: %q", got)
 	}
 }
+
+func TestVideoBitrateKbps(t *testing.T) {
+	if got := Default().Video.BitrateKbps; got != 0 {
+		t.Fatalf("default bitrate = %d, want 0 (the frame budget)", got)
+	}
+	dir := t.TempDir()
+	p := filepath.Join(dir, "rate.yaml")
+	if err := os.WriteFile(p, []byte("video:\n  bitrate_kbps: 1500\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := Default()
+	if err := applyFile(c, p); err != nil {
+		t.Fatal(err)
+	}
+	if c.Video.BitrateKbps != 1500 {
+		t.Fatalf("bitrate = %d, want 1500", c.Video.BitrateKbps)
+	}
+	b, err := encodeYAML(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2 := Default()
+	p2 := filepath.Join(dir, "rate2.yaml")
+	if err := os.WriteFile(p2, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyFile(c2, p2); err != nil {
+		t.Fatal(err)
+	}
+	if c2.Video.BitrateKbps != 1500 {
+		t.Fatalf("bitrate lost in the round trip: %d\n%s", c2.Video.BitrateKbps, b)
+	}
+}
